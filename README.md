@@ -56,12 +56,38 @@ next request; and a deployment can re-bind that IRI to a file, a peer, or a
 store without this crate knowing which — which is also the migration path when
 files stop being enough.
 
+## Two authorities, because an unclaimed prefix has no owner
+
+A prefix nobody holds cannot be gated by its own administrative capability, so
+claiming and administering are separate:
+
+| capability | grants |
+|---|---|
+| `urn:cap:name:claim` | may become a tenant at all — the signup gate |
+| `urn:cap:name:admin:<prefix>` | owns that namespace: may change how it resolves, or retire it |
+
+Actions declare the **wildcard** (`urn:cap:name:admin:*`) — the coarse floor the
+kernel enforces — and the exact per-prefix grant is checked at invocation, since
+only that code knows which prefix a request names. Holding one namespace's admin
+capability therefore confers nothing over anyone else's.
+
+## Retirement, never release
+
+There is no way to free a prefix. Handing a used one to a new owner would let
+them answer for IRIs the previous owner minted — an identifier hijack, and the
+single failure a permanence service must not have. `Delete` writes a tombstone
+instead: the claim survives, the prefix can never be re-issued, and dereferencing
+an IRI under it reports the retirement and its reason rather than pretending the
+namespace never existed.
+
 ## Endpoints
 
 | IRI | verb | what |
 |---|---|---|
 | `urn:name:registry` | Source | every claimed namespace, as JSON |
 | `urn:name:resolve` | Source | how a path resolves, or a `NotFound` naming it |
+| `urn:name:claim` | Sink | claim a prefix nobody holds |
+| `urn:name:admin` | Sink · Delete | change how a namespace resolves · retire it |
 
 ```sh
 ikigai -c 'source urn:name:resolve path=resmud/core'
@@ -70,6 +96,6 @@ ikigai -c 'source urn:name:resolve path=resmud/core'
 
 ## Status
 
-M1. Registry, claim rule, and resolution. Still to come: as-of resolution backed
+M1. Registry, claim rule, resolution, and capability-scoped administration. Still to come: as-of resolution backed
 by the vocabulary's own git history, signed redirect provenance and succession,
 and peer mirroring — the properties that make a permanence promise credible.

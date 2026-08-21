@@ -41,6 +41,17 @@ pub enum Strategy {
         /// The source of truth this copy tracks.
         origin: String,
     },
+    /// Withdrawn from service, and **still claimed**.
+    ///
+    /// Releasing a prefix back into the pool would let a later owner answer for
+    /// IRIs the earlier one minted — an identifier hijack, and precisely the
+    /// failure a permanence service exists to prevent. So withdrawal is a
+    /// tombstone: the claim survives, resolution reports the retirement, and the
+    /// prefix can never be claimed again.
+    Retired {
+        /// Why it was withdrawn, for whoever dereferences an IRI under it.
+        reason: String,
+    },
 }
 
 /// One claimed namespace.
@@ -256,6 +267,30 @@ mod tests {
     #[test]
     fn lookup_does_not_match_a_partial_segment() {
         assert_eq!(registry(&["acme"]).lookup("acmecorp/vocab"), None);
+    }
+
+    /// The permanence rule: a retired namespace is still claimed, so its
+    /// prefix cannot be handed to someone else who would then answer for the
+    /// previous owner's IRIs.
+    #[test]
+    fn a_retired_prefix_stays_unclaimable() {
+        let reg = Registry {
+            namespaces: vec![Namespace {
+                prefix: "gone".into(),
+                owner: "urn:cap:name:admin:gone".into(),
+                strategy: Strategy::Retired {
+                    reason: "project ended".into(),
+                },
+            }],
+        };
+        assert_eq!(
+            reg.may_claim("gone"),
+            Err(ClaimError::Overlaps("gone".into()))
+        );
+        assert_eq!(
+            reg.may_claim("gone/vocab"),
+            Err(ClaimError::Overlaps("gone".into()))
+        );
     }
 
     #[test]

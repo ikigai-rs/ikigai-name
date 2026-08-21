@@ -30,8 +30,10 @@
 
 #![deny(missing_docs)]
 
+pub mod admin;
 pub mod registry;
 
+pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, ReprType,
     Representation, Result, Verb,
@@ -66,7 +68,7 @@ fn text_plain_utf8() -> ReprType {
 /// [`REGISTRY_IRI`] to a different backing without touching this code — which
 /// is also the migration path to a real store when file-and-page-cache stops
 /// being enough.
-async fn load(inv: &Invocation<'_>) -> Result<Registry> {
+pub(crate) async fn load(inv: &Invocation<'_>) -> Result<Registry> {
     let iri = Iri::parse(REGISTRY_IRI).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
     let repr = inv.source(&iri).await?;
     Registry::from_json(&repr.bytes).map_err(|e| {
@@ -130,6 +132,16 @@ pub fn resolve() -> AsyncFnEndpoint {
                 Strategy::Hosted { source } => format!("hosted\t{source}"),
                 Strategy::Redirect { target } => format!("redirect\t{target}"),
                 Strategy::Mirror { origin } => format!("mirror\t{origin}"),
+                // Retired is an ANSWER, not a miss: the namespace was real, and
+                // saying so is more useful than pretending it never existed.
+                // HTTP would call this 410 Gone; core has no such variant, so
+                // the face maps it and NotFound carries the explanation.
+                Strategy::Retired { reason } => {
+                    return Err(Error::NotFound(format!(
+                        "name: {:?} is retired: {reason}",
+                        found.prefix
+                    )))
+                }
             };
             Ok(Representation::new(
                 text_plain_utf8(),
@@ -160,6 +172,8 @@ pub fn space() -> ikigai_core::EndpointSpace {
     ikigai_core::EndpointSpace::new()
         .bind(Exact::new("urn:name:registry"), registry_endpoint())
         .bind(Exact::new("urn:name:resolve"), resolve())
+        .bind(Exact::new("urn:name:claim"), claim())
+        .bind(Exact::new("urn:name:admin"), admin())
 }
 
 #[cfg(test)]
