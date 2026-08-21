@@ -89,6 +89,33 @@ namespace never existed.
 | `urn:name:claim` | Sink | claim a prefix nobody holds |
 | `urn:name:admin` | Sink · Delete | change how a namespace resolves · retire it |
 | `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment |
+| `urn:name:document` | Source | the namespace document, negotiated (`as=`) |
+
+## One IRI, many representations
+
+`rm:Weapon` **is** `https://iriref.org/resmud/core#Weapon`. A `.ttl` suffix for
+RDF tools and a `.html` one for browsers would fork that single term into
+several, so `urn:name:document` negotiates instead:
+
+| `as=` | answer |
+|---|---|
+| *(absent)* or `text/turtle` | the document as stored — Turtle is the hub |
+| `text/html` | the documentation face |
+| anything else | reached by selecting a transreptor chain and driving it |
+
+Only the first two are produced here. Every other format arrives through the
+kernel's transreptor selection — the same mechanism the `Meta` path uses — so
+this crate gains every format the host has a transreptor bound for and carries
+conversion code for none of them. When nothing reaches the requested type, the
+error names what *is* available and what would fix it.
+
+Media-type parameters do not defeat negotiation: `text/turtle; charset=utf-8` is
+Turtle.
+
+**The ETag is not minted here.** A representation already carries a content
+address, and the HTTP face turns that into an `ETag` and answers
+`If-None-Match`; minting a second one at this layer would give the same bytes
+two identities.
 
 ## The documentation face
 
@@ -124,7 +151,7 @@ ikigai -c 'source urn:name:resolve path=resmud/core'
 
 ## Status
 
-M1. Registry, claim rule, resolution, capability-scoped administration, and the
-HTML documentation face. Still to come: as-of resolution backed
+M1. Registry, claim rule, resolution, capability-scoped administration, the HTML
+documentation face, and content negotiation. Still to come: as-of resolution backed
 by the vocabulary's own git history, signed redirect provenance and succession,
 and peer mirroring — the properties that make a permanence promise credible.

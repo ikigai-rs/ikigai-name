@@ -32,10 +32,12 @@
 
 pub mod admin;
 pub mod docs;
+pub mod document;
 pub mod registry;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
 pub use docs::docs;
+pub use document::document;
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, ReprType,
     Representation, Result, Verb,
@@ -187,6 +189,7 @@ pub fn space() -> ikigai_core::EndpointSpace {
         .bind(Exact::new("urn:name:claim"), claim())
         .bind(Exact::new("urn:name:admin"), admin())
         .bind(Exact::new("urn:name:docs"), docs())
+        .bind(Exact::new("urn:name:document"), document())
 }
 
 #[cfg(test)]
