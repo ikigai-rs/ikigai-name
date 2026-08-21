@@ -1,6 +1,6 @@
 //! `urn:name:*` — persistent-identifier resolution as an ikigai module.
 //!
-//! A curated IRI outlives the machine, the domain and the organisation that
+//! A curated IRI outlives the machine, the domain and the organization that
 //! first served it. This module is the resolver behind such an IRI: it maps a
 //! claimed namespace onto the answer for it, and — because resolution runs
 //! through the kernel — that mapping is itself a resource, editable without a
@@ -113,7 +113,7 @@ pub(crate) fn resolve_path<'r>(
 
 /// `urn:name:registry` — the registry as JSON.
 ///
-/// Cacheable as a pure re-serialisation of its source — freshness is the
+/// Cacheable as a pure re-serialization of its source — freshness is the
 /// registry resource's business, not this endpoint's. A file-backed registry
 /// with a watcher therefore caches and invalidates on edit; one without a
 /// watcher is uncacheable and clamps this to uncacheable too.
