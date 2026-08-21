@@ -51,6 +51,7 @@ fn serving(media: &'static str, body: &'static str) -> FnEndpoint {
 fn kernel() -> Kernel {
     let space = ikigai_sparql::space()
         .bind(Exact::new("urn:name:docs"), ikigai_name::docs())
+        .bind(Exact::new("urn:name:document"), ikigai_name::document())
         .bind(Exact::new("urn:test:vocab"), serving("text/turtle", VOCAB))
         .bind(
             Exact::new("urn:name:registry-source"),
@@ -151,4 +152,57 @@ fn docs_declares_its_contract() {
     assert!(described.contains("prefix"), "declares prefix: {described}");
     assert!(described.contains("theme"), "declares theme");
     assert!(described.contains("text/html"), "declares its output");
+}
+
+// --- the negotiated face ----------------------------------------------------
+
+fn document(args: &[(&str, &str)]) -> Result<Representation> {
+    let mut request = Request::new(Verb::Source, Iri::parse("urn:name:document").unwrap());
+    for (name, value) in args {
+        request = request.with_arg(*name, ArgRef::Inline(value.as_bytes().to_vec()));
+    }
+    block_on(kernel().issue(request, &Capability::root()))
+}
+
+/// The point of the negotiated face: **one IRI, more than one answer**. A term's
+/// identity is its IRI, so a per-format suffix would fork `rm:Weapon` into
+/// several different terms.
+#[test]
+fn one_path_answers_turtle_and_html_from_the_same_iri() {
+    let turtle = document(&[("path", "resmud/core")]).expect("turtle");
+    assert!(turtle.repr_type.media_type.starts_with("text/turtle"));
+    assert!(String::from_utf8_lossy(&turtle.bytes).contains("rm:Weapon"));
+
+    let html = document(&[("path", "resmud/core"), ("as", "text/html")]).expect("html");
+    assert!(html.repr_type.media_type.starts_with("text/html"));
+    let body = String::from_utf8_lossy(&html.bytes);
+    assert!(body.contains("<!doctype html>"), "a page: {body}");
+    assert!(body.contains("Weapon"), "documents the vocabulary's terms");
+}
+
+/// The HTML reached through negotiation must be the same page the docs face
+/// serves directly — otherwise there are two renderings to keep in step.
+#[test]
+fn the_negotiated_html_is_the_documentation_face() {
+    let negotiated = document(&[("path", "resmud"), ("as", "text/html")]).expect("html");
+    let direct = get(&[("prefix", "resmud")]).expect("html");
+    assert_eq!(
+        String::from_utf8_lossy(&negotiated.bytes),
+        direct,
+        "one rendering, reached two ways"
+    );
+}
+
+#[test]
+fn the_theme_survives_negotiation() {
+    let repr = document(&[
+        ("path", "resmud"),
+        ("as", "text/html"),
+        ("theme", "contrast"),
+    ])
+    .expect("renders");
+    assert!(
+        String::from_utf8_lossy(&repr.bytes).contains("#ffe066"),
+        "the high-contrast accent reached the page"
+    );
 }
