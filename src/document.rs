@@ -63,8 +63,9 @@ pub fn document() -> AsyncFnEndpoint {
             let registry = load(inv).await?;
             let found = resolve_path(&registry, &path)?;
             let prefix = found.prefix.clone();
+            let strategy = found.strategy.clone();
 
-            let source = match &found.strategy {
+            let source = match &strategy {
                 Strategy::Hosted { source } => source.clone(),
                 Strategy::Mirror { origin } => origin.clone(),
                 // The owner serves this one. Reporting where is what lets the
@@ -98,6 +99,22 @@ pub fn document() -> AsyncFnEndpoint {
             let iri = Iri::parse(&source)
                 .map_err(|e| Error::Endpoint(format!("name: bad source {source:?}: {e}")))?;
             let stored = inv.source(&iri).await?;
+
+            // The ceiling is checked on the way OUT, not on the way in: by the
+            // time it is here the bytes are already resident, so this bounds
+            // what leaves rather than what arrives. It is still worth having —
+            // a transreptor chain multiplies a large document several times
+            // over, and refusing early is what stops one namespace's mistake
+            // from being every request's problem.
+            let ceiling = registry.limits.max_document_bytes;
+            if stored.bytes.len() > ceiling {
+                return Err(Error::Endpoint(format!(
+                    "name: {path:?} is {} bytes, over this host's {ceiling}-byte ceiling \
+                     (raise limits.max_document_bytes in the registry)",
+                    stored.bytes.len()
+                )));
+            }
+
             let have = bare(&stored.repr_type.media_type).to_string();
 
             if have == wanted {
@@ -319,6 +336,36 @@ mod tests {
     fn an_unclaimed_path_is_not_found() {
         let err = get(&kernel(false), &[("path", "nobody/here")]).expect_err("unclaimed");
         assert!(matches!(err, Error::NotFound(_)), "got: {err:?}");
+    }
+
+    /// The ceiling is the only bound on what one request can make this host
+    /// hold, so it has to actually refuse — and say how to raise it.
+    #[test]
+    fn a_document_over_the_ceiling_is_refused_and_says_how_to_raise_it() {
+        const TINY: &str = r#"{"namespaces":[{"prefix":"resmud","owner":"x",
+            "strategy":"hosted","source":"urn:test:vocab"}],
+            "limits":{"max_document_bytes":10}}"#;
+        let kernel = Kernel::new(Arc::new(
+            space()
+                .bind(Exact::new("urn:test:vocab"), serving(CANONICAL, VOCAB))
+                .bind(
+                    Exact::new("urn:name:registry-source"),
+                    serving("application/json", TINY),
+                ),
+        ));
+        let err = get(&kernel, &[("path", "resmud/core")]).expect_err("over the ceiling");
+        let text = err.to_string();
+        assert!(text.contains("ceiling"), "says what happened: {text}");
+        assert!(
+            text.contains("max_document_bytes"),
+            "names the setting that would fix it: {text}"
+        );
+    }
+
+    #[test]
+    fn a_document_under_the_ceiling_is_served() {
+        let repr = get(&kernel(false), &[("path", "resmud/core")]).expect("under the ceiling");
+        assert!(!repr.bytes.is_empty());
     }
 
     #[test]

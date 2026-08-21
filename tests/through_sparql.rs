@@ -36,12 +36,12 @@ const REGISTRY: &str = r#"{"namespaces":[{"prefix":"resmud",
     "owner":"urn:cap:name:admin:resmud",
     "strategy":"hosted","source":"urn:test:vocab"}]}"#;
 
+/// Cacheable, standing in for a file-backed source with a watcher — which is
+/// what production has, and the only setting in which a downstream face's own
+/// cacheability is observable rather than masked by the meet.
 fn serving(media: &'static str, body: &'static str) -> FnEndpoint {
     FnEndpoint::new("fixture", move |_: &Invocation<'_>| {
-        Ok(Representation::new(
-            ReprType::new(media),
-            body.as_bytes().to_vec(),
-        ))
+        Ok(Representation::new(ReprType::new(media), body.as_bytes().to_vec()).cacheable())
     })
 }
 
@@ -204,5 +204,55 @@ fn the_theme_survives_negotiation() {
     assert!(
         String::from_utf8_lossy(&repr.bytes).contains("#ffe066"),
         "the high-contrast accent reached the page"
+    );
+}
+
+/// ★ The regression guard for the finding that prompted this: the documentation
+/// page was unconditionally uncacheable, so every view re-ran the SPARQL query
+/// even when nothing had changed. Nothing in the types says otherwise — only a
+/// measurement does.
+#[test]
+fn the_documentation_page_is_cacheable_when_its_sources_are() {
+    let html = document(&[("path", "resmud"), ("as", "text/html")]).expect("renders");
+    assert_eq!(
+        html.expiry,
+        ikigai_core::Expiry::Never,
+        "a pure render over cacheable sources must be cacheable"
+    );
+}
+
+/// The other direction, which the kernel enforces for us: a volatile source
+/// must still make the page volatile, however pure the render is. Marking a
+/// face cacheable is a claim about the computation, never about the inputs.
+#[test]
+fn a_volatile_source_still_makes_the_page_volatile() {
+    let volatile = FnEndpoint::new("volatile-vocab", |_: &Invocation<'_>| {
+        // No `.cacheable()` — the default is uncacheable.
+        Ok(Representation::new(
+            ReprType::new("text/turtle"),
+            VOCAB.as_bytes().to_vec(),
+        ))
+    });
+    let space = ikigai_sparql::space()
+        .bind(Exact::new("urn:name:docs"), ikigai_name::docs())
+        .bind(Exact::new("urn:name:document"), ikigai_name::document())
+        .bind(Exact::new("urn:test:vocab"), volatile)
+        .bind(
+            Exact::new("urn:name:registry-source"),
+            serving("application/json", REGISTRY),
+        );
+    let kernel = Kernel::new(Arc::new(space));
+    let repr = block_on(
+        kernel.issue(
+            Request::new(Verb::Source, Iri::parse("urn:name:docs").unwrap())
+                .with_arg("prefix", ArgRef::Inline(b"resmud".to_vec())),
+            &Capability::root(),
+        ),
+    )
+    .expect("renders");
+    assert_eq!(
+        repr.expiry,
+        ikigai_core::Expiry::Always,
+        "the meet with a volatile dependency must win"
     );
 }

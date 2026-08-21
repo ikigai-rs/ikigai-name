@@ -90,6 +90,35 @@ namespace never existed.
 | `urn:name:admin` | Sink · Delete | change how a namespace resolves · retire it |
 | `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment |
 | `urn:name:document` | Source | the namespace document, negotiated (`as=`) |
+| `urn:name:health` | Source | what this deployment holds, and what it refuses |
+
+## Limits and cacheability
+
+The registry carries this deployment's ceilings, because it is already the
+operator's editing surface and a second config channel is a second thing to keep
+in step:
+
+```json
+{ "limits": { "max_document_bytes": 8388608 } }
+```
+
+The resolver reads whole documents into memory, so an unbounded one is the only
+way a single request can hurt the host. Exceeding it is refused with an error
+that names the setting which would raise it.
+
+**Every read face marks itself cacheable, and that is a claim about the
+computation, not the inputs.** The kernel takes the meet of a result's own
+expiry with its dependencies', so a volatile source still yields a volatile
+answer — but a face that never marks itself cacheable can never be cached
+*however* cacheable its sources are, and nothing in the type system says so.
+Both faces here were exactly that until it was measured: every documentation
+view re-ran its SPARQL query. There are tests pinning both directions.
+
+`urn:name:health` reports the counts, the ceiling in force, and which faces
+claim cacheability. It is **not** cache eviction — that belongs to the kernel,
+and a corpus of a few hundred kilobytes would never exercise a policy anyway.
+It is the instrumentation such a policy would need, and that an operator wants
+long before one exists.
 
 ## One IRI, many representations
 
@@ -151,7 +180,9 @@ ikigai -c 'source urn:name:resolve path=resmud/core'
 
 ## Status
 
-M1. Registry, claim rule, resolution, capability-scoped administration, the HTML
-documentation face, and content negotiation. Still to come: as-of resolution backed
-by the vocabulary's own git history, signed redirect provenance and succession,
-and peer mirroring — the properties that make a permanence promise credible.
+M1 complete: registry, claim rule, resolution, capability-scoped administration,
+the HTML documentation face, content negotiation, limits and cacheability.
+
+Next: as-of resolution backed by the vocabulary's own git history, signed
+redirect provenance and succession, and peer mirroring — the properties that
+make a permanence promise credible. 
