@@ -178,6 +178,37 @@ ikigai -c 'source urn:name:resolve path=resmud/core'
 # resmud	hosted	urn:file:resmud-vocab
 ```
 
+## Running it
+
+```sh
+cargo build --release --features server
+ikigai-name-server --listen 127.0.0.1:8080 --root /srv/namespaces --cache-files
+```
+
+The binary is a **host**: it binds `ikigai-name`, `ikigai-fs`, `ikigai-sparql`
+and `ikigai-web` into a kernel and puts HTTP on it. The library knows nothing
+about files, ports or HTTP. Because the feature list is the module manifest,
+what this process *cannot* do — calendars, exec, secrets — is a property of the
+build rather than of a config file someone might edit.
+
+The public surface is two routes, served `routes_only` so anything else 404s
+before it reaches a resource:
+
+```text
+/{ns}          → urn:name:doc:{ns}
+/{ns}/{doc}    → urn:name:doc:{ns}/{doc}
+```
+
+Administration is deliberately absent from it. The server holds a **read-only**
+capability jailed to `--root`, so `urn:name:claim` and `urn:name:admin` cannot be
+performed by this process however it is addressed — they belong on a local or
+authenticated transport.
+
+`--cache-files` is opt-in because a golden thread is cut by a write *through the
+kernel*, and a `git pull` is not one. Use it where `--root` only changes as part
+of a deploy, which restarts the process anyway; without it every documentation
+view re-reads its file and re-runs its SPARQL query.
+
 ## Status
 
 M1 complete: registry, claim rule, resolution, capability-scoped administration,
