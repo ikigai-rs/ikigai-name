@@ -67,12 +67,43 @@ pub struct Namespace {
     pub strategy: Strategy,
 }
 
+/// What this deployment refuses to do, whatever a namespace asks for.
+///
+/// A ceiling the operator sets, not a tuning knob: the resolver reads whole
+/// documents into memory, so an unbounded one is the only way a single request
+/// can hurt the host. Stated in the registry rather than a second config file,
+/// because the registry is already the operator's editing surface and a second
+/// channel is a second thing to keep in step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Limits {
+    /// Largest document this host will serve, in bytes.
+    #[serde(default = "default_max_document_bytes")]
+    pub max_document_bytes: usize,
+}
+
+/// 8 MiB — far above any vocabulary (ResMUD core is ~4 KB) and far below what
+/// would trouble the smallest sensible host.
+fn default_max_document_bytes() -> usize {
+    8 * 1024 * 1024
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_document_bytes: default_max_document_bytes(),
+        }
+    }
+}
+
 /// The whole registry, as parsed from the operator's file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registry {
     /// Every claimed namespace. No two may overlap; see [`Registry::claim`].
     #[serde(default)]
     pub namespaces: Vec<Namespace>,
+    /// This deployment's ceilings.
+    #[serde(default)]
+    pub limits: Limits,
 }
 
 /// Why a claim was refused.
@@ -176,6 +207,7 @@ mod tests {
     fn registry(prefixes: &[&str]) -> Registry {
         Registry {
             namespaces: prefixes.iter().map(|p| hosted(p)).collect(),
+            ..Registry::default()
         }
     }
 
@@ -282,6 +314,7 @@ mod tests {
                     reason: "project ended".into(),
                 },
             }],
+            ..Registry::default()
         };
         assert_eq!(
             reg.may_claim("gone"),
@@ -306,6 +339,7 @@ mod tests {
                     },
                 },
             ],
+            ..Registry::default()
         };
         let json = serde_json::to_vec(&reg).expect("serialises");
         assert_eq!(Registry::from_json(&json).expect("parses"), reg);
@@ -339,6 +373,21 @@ mod tests {
                 source: "urn:file:resmud-vocab".into()
             })
         );
+    }
+
+    /// An operator who has never heard of the ceiling still gets one — a limit
+    /// that only exists when configured is not a limit.
+    #[test]
+    fn the_document_ceiling_has_a_default() {
+        let reg = Registry::from_json(b"{}").expect("parses");
+        assert_eq!(reg.limits.max_document_bytes, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn the_ceiling_can_be_lowered_in_the_file() {
+        let reg =
+            Registry::from_json(br#"{"limits":{"max_document_bytes":1024}}"#).expect("parses");
+        assert_eq!(reg.limits.max_document_bytes, 1024);
     }
 
     #[test]

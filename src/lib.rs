@@ -27,17 +27,20 @@
 //! |---|---|---|
 //! | `urn:name:registry` | Source | the parsed registry, as JSON |
 //! | `urn:name:resolve` | Source | how a path resolves, or an error naming why not |
+//! | `urn:name:health` | Source | what this deployment holds, and what it refuses |
 
 #![deny(missing_docs)]
 
 pub mod admin;
 pub mod docs;
 pub mod document;
+pub mod health;
 pub mod registry;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
 pub use docs::docs;
 pub use document::document;
+pub use health::health;
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, ReprType,
     Representation, Result, Verb,
@@ -110,15 +113,17 @@ pub(crate) fn resolve_path<'r>(
 
 /// `urn:name:registry` — the registry as JSON.
 ///
-/// Uncacheable: it is the operator's live editing surface, and a stale answer
-/// here would misreport who owns what.
+/// Cacheable as a pure re-serialisation of its source — freshness is the
+/// registry resource's business, not this endpoint's. A file-backed registry
+/// with a watcher therefore caches and invalidates on edit; one without a
+/// watcher is uncacheable and clamps this to uncacheable too.
 pub fn registry_endpoint() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("registry", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
             let registry = load(inv).await?;
             let body = serde_json::to_vec_pretty(&registry)
                 .map_err(|e| Error::Endpoint(format!("name: {e}")))?;
-            Ok(Representation::new(ReprType::new(APPLICATION_JSON), body))
+            Ok(Representation::new(ReprType::new(APPLICATION_JSON), body).cacheable())
         })
     })
     .with_description(
@@ -157,10 +162,14 @@ pub fn resolve() -> AsyncFnEndpoint {
                     )))
                 }
             };
+            // Pure in (registry, path); the kernel clamps to the registry's
+            // own expiry, so a file-backed registry with a watcher caches and
+            // one without does not.
             Ok(Representation::new(
                 text_plain_utf8(),
                 format!("{}\t{answer}\n", found.prefix).into_bytes(),
-            ))
+            )
+            .cacheable())
         })
     })
     .with_description(
@@ -190,6 +199,7 @@ pub fn space() -> ikigai_core::EndpointSpace {
         .bind(Exact::new("urn:name:admin"), admin())
         .bind(Exact::new("urn:name:docs"), docs())
         .bind(Exact::new("urn:name:document"), document())
+        .bind(Exact::new("urn:name:health"), health())
 }
 
 #[cfg(test)]

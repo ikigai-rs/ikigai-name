@@ -462,7 +462,14 @@ pub fn docs() -> AsyncFnEndpoint {
                 }
                 _ => page_html(&prefix, &theme, &graph, &terms),
             };
-            Ok(Representation::new(text_html(), body.into_bytes()))
+            // ★ `.cacheable()` is a claim that THIS computation is pure — the
+            // same registry, graph and arguments always render the same page —
+            // not a claim that the inputs are fresh. The kernel takes the meet
+            // of this with every dependency's expiry (kernel.rs), so a volatile
+            // source still yields a volatile page. Without it the page is
+            // unconditionally uncacheable, and every view re-runs the SPARQL
+            // query even when nothing has changed.
+            Ok(Representation::new(text_html(), body.into_bytes()).cacheable())
         })
     })
     .with_description(
