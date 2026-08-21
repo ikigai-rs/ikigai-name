@@ -22,6 +22,13 @@ async-trait = "0.1"
 # JSON matches the house configuration format (edge-routes.json, clients.json).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The contrast floor. Used for its colour maths, so the documentation palettes
+# are CHECKED rather than asserted — a page a newcomer must read is the wrong
+# place to discover that "muted" meant "illegible".
+ikigai-a11y = "0.2.0"
 
 [dev-dependencies]
 futures = "0.3"
+# The real SPARQL engine, so the docs face's term extraction is proved through a
+# genuine module boundary rather than a hand-written stub of the results format.
+ikigai-sparql = "0.1.6"

@@ -88,6 +88,34 @@ namespace never existed.
 | `urn:name:resolve` | Source | how a path resolves, or a `NotFound` naming it |
 | `urn:name:claim` | Sink | claim a prefix nobody holds |
 | `urn:name:admin` | Sink · Delete | change how a namespace resolves · retire it |
+| `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment |
+
+## The documentation face
+
+A vocabulary only a parser can read will not be adopted. `urn:name:docs` renders
+a hosted namespace as a page, **transrepted from the same Turtle the namespace
+serves** — so the documentation cannot drift from the vocabulary, because there
+is no second copy of it. Terms are extracted with SPARQL issued back through the
+kernel, so this crate carries no RDF parser and a mirrored namespace is read
+exactly like a local one.
+
+htmx does the interaction: term buttons `hx-get` their own detail into a live
+region, and the theme chooser is a real `<form method="get">` that htmx upgrades
+rather than replaces — so it works with JavaScript disabled.
+
+### Colour is a floor, not a preference
+
+Palettes are checked against the WCAG contrast floor using
+[`ikigai-a11y`](https://github.com/ikigai-rs/ikigai-a11y), and **the check is a
+test**: a palette whose body text falls below 4.5:1 fails the build. Body text,
+muted text, links, and non-text borders are each checked against the floor that
+applies to them, and the high-contrast palette is held to AAA (7:1) rather than
+AA — otherwise it is just a third theme.
+
+Selection is offered three ways on purpose: `prefers-color-scheme` for people
+who set it once system-wide, an explicit chooser for everyone else, and a
+high-contrast palette for people AA does not serve. `prefers-reduced-motion` is
+honoured unconditionally.
 
 ```sh
 ikigai -c 'source urn:name:resolve path=resmud/core'
@@ -96,6 +124,7 @@ ikigai -c 'source urn:name:resolve path=resmud/core'
 
 ## Status
 
-M1. Registry, claim rule, resolution, and capability-scoped administration. Still to come: as-of resolution backed
+M1. Registry, claim rule, resolution, capability-scoped administration, and the
+HTML documentation face. Still to come: as-of resolution backed
 by the vocabulary's own git history, signed redirect provenance and succession,
 and peer mirroring — the properties that make a permanence promise credible.

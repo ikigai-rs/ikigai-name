@@ -31,9 +31,11 @@
 #![deny(missing_docs)]
 
 pub mod admin;
+pub mod docs;
 pub mod registry;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
+pub use docs::docs;
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, ReprType,
     Representation, Result, Verb,
@@ -90,6 +92,20 @@ fn path_arg(inv: &Invocation<'_>) -> Result<String> {
     Ok(raw.trim().to_string())
 }
 
+/// The namespace claiming `path`, or a permanent absence.
+///
+/// A path in no claimed namespace is permanently absent rather than temporarily
+/// unavailable — nothing about retrying changes it — so this is `NotFound` and
+/// not `Unavailable`.
+pub(crate) fn resolve_path<'r>(
+    registry: &'r Registry,
+    path: &str,
+) -> Result<&'r registry::Namespace> {
+    registry
+        .lookup(path)
+        .ok_or_else(|| Error::NotFound(format!("name: no namespace claims {path:?}")))
+}
+
 /// `urn:name:registry` — the registry as JSON.
 ///
 /// Uncacheable: it is the operator's live editing surface, and a stale answer
@@ -123,11 +139,7 @@ pub fn resolve() -> AsyncFnEndpoint {
         Box::pin(async move {
             let path = path_arg(inv)?;
             let registry = load(inv).await?;
-            let found = registry.lookup(&path).ok_or_else(|| {
-                // A path in no claimed namespace is permanently absent, not
-                // temporarily unavailable: nothing about retrying changes it.
-                Error::NotFound(format!("name: no namespace claims {path:?}"))
-            })?;
+            let found = resolve_path(&registry, &path)?;
             let answer = match &found.strategy {
                 Strategy::Hosted { source } => format!("hosted\t{source}"),
                 Strategy::Redirect { target } => format!("redirect\t{target}"),
@@ -174,6 +186,7 @@ pub fn space() -> ikigai_core::EndpointSpace {
         .bind(Exact::new("urn:name:resolve"), resolve())
         .bind(Exact::new("urn:name:claim"), claim())
         .bind(Exact::new("urn:name:admin"), admin())
+        .bind(Exact::new("urn:name:docs"), docs())
 }
 
 #[cfg(test)]
