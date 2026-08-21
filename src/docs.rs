@@ -9,7 +9,7 @@
 //! carries no RDF parser and gains federation for free: a namespace hosted here
 //! and one mirrored from a peer are read the same way.
 //!
-//! ## Colour is a floor, not a preference
+//! ## Color is a floor, not a preference
 //!
 //! Themes are checked against the WCAG contrast floor by
 //! [`ikigai_a11y`](https://crates.io/crates/ikigai-a11y), and the check is a
@@ -56,7 +56,7 @@ pub struct Palette {
     pub ground: &'static str,
     /// Body text.
     pub ink: &'static str,
-    /// De-emphasised text — the field most likely to fail a floor, because
+    /// De-emphasized text — the field most likely to fail a floor, because
     /// "muted" is usually achieved by moving it toward the background.
     pub muted: &'static str,
     /// Links and accents.
@@ -114,7 +114,7 @@ pub const HIGH_CONTRAST: Palette = Palette {
 pub const PALETTES: [Palette; 3] = [LIGHT, DARK, HIGH_CONTRAST];
 
 /// The palette named by `theme=`, or [`LIGHT`] for `auto` and anything
-/// unrecognised — an unknown name must degrade to a readable page, never to no
+/// unrecognized — an unknown name must degrade to a readable page, never to no
 /// page.
 pub fn palette(name: &str) -> Palette {
     PALETTES
@@ -127,7 +127,7 @@ pub fn palette(name: &str) -> Palette {
 /// The stylesheet.
 ///
 /// `auto` emits both palettes behind `prefers-color-scheme` so a system-wide
-/// preference is honoured without anyone choosing anything; an explicit theme
+/// preference is honored without anyone choosing anything; an explicit theme
 /// emits just that one.
 fn stylesheet(theme: &str) -> String {
     let vars = |p: &Palette| {
@@ -496,7 +496,7 @@ pub fn docs() -> AsyncFnEndpoint {
                     )
                     .input(
                         ArgSpec::new("theme")
-                            .summary("colour theme; `auto` follows prefers-color-scheme")
+                            .summary("color theme; `auto` follows prefers-color-scheme")
                             .one_of(["auto", "light", "dark", "contrast"])
                             .default_value("auto")
                             .optional()
@@ -513,7 +513,7 @@ mod tests {
     use ikigai_a11y::{ratio, Rgba};
 
     fn rgba(hex: &str) -> Rgba {
-        Rgba::parse(hex).expect("a palette colour parses")
+        Rgba::parse(hex).expect("a palette color parses")
     }
 
     /// ★ The floor is a test, not a review note. Every palette's body text must
@@ -524,8 +524,8 @@ mod tests {
     fn every_palette_clears_the_text_floor() {
         for p in PALETTES {
             let ground = rgba(p.ground);
-            for (field, colour) in [("ink", p.ink), ("muted", p.muted), ("accent", p.accent)] {
-                let r = ratio(rgba(colour), ground);
+            for (field, color) in [("ink", p.ink), ("muted", p.muted), ("accent", p.accent)] {
+                let r = ratio(rgba(color), ground);
                 assert!(
                     r >= FLOOR_TEXT,
                     "{}: {field} is {r:.2}:1 against the ground, below the {FLOOR_TEXT}:1 floor",
@@ -569,12 +569,12 @@ mod tests {
     #[test]
     fn the_high_contrast_palette_clears_the_enhanced_floor() {
         let ground = rgba(HIGH_CONTRAST.ground);
-        for (field, colour) in [
+        for (field, color) in [
             ("ink", HIGH_CONTRAST.ink),
             ("muted", HIGH_CONTRAST.muted),
             ("accent", HIGH_CONTRAST.accent),
         ] {
-            let r = ratio(rgba(colour), ground);
+            let r = ratio(rgba(color), ground);
             assert!(
                 r >= FLOOR_ENHANCED,
                 "high contrast: {field} is {r:.2}:1, below the AAA {FLOOR_ENHANCED}:1 floor"
@@ -606,10 +606,10 @@ mod tests {
         assert!(css.contains(HIGH_CONTRAST.accent));
     }
 
-    /// Reduced motion is honoured unconditionally: there is no animation worth
+    /// Reduced motion is honored unconditionally: there is no animation worth
     /// overriding someone's stated medical preference for.
     #[test]
-    fn reduced_motion_is_honoured() {
+    fn reduced_motion_is_honored() {
         assert!(stylesheet("auto").contains("prefers-reduced-motion:reduce"));
     }
 
@@ -654,7 +654,7 @@ mod tests {
             html.contains("value=\"dark\" selected"),
             "reflects the choice"
         );
-        assert!(html.contains("for=\"theme\""), "the select is labelled");
+        assert!(html.contains("for=\"theme\""), "the select is labeled");
     }
 
     #[test]

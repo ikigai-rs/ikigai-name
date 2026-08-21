@@ -341,7 +341,7 @@ mod tests {
             ],
             ..Registry::default()
         };
-        let json = serde_json::to_vec(&reg).expect("serialises");
+        let json = serde_json::to_vec(&reg).expect("serializes");
         assert_eq!(Registry::from_json(&json).expect("parses"), reg);
     }
 
