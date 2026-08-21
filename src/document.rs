@@ -49,12 +49,20 @@ fn bare(media_type: &str) -> &str {
 pub fn document() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("document", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
-            let path = inv
-                .inline_str("path")
-                .or_else(|_| inv.inline_str("content"))
-                .map_err(|_| Error::MissingArgument("path".into()))?
-                .trim()
-                .to_string();
+            // Three ways in, most specific first. The BINDING is what lets an
+            // IRI carry the path (`urn:name:doc:resmud/core` via a template
+            // whose trailing variable captures the remainder, slashes and all)
+            // — which is what makes an HTTP path map onto a resource identity
+            // rather than a query parameter.
+            let path = match inv.bindings.get("path") {
+                Some(bound) => bound.trim().to_string(),
+                None => inv
+                    .inline_str("path")
+                    .or_else(|_| inv.inline_str("content"))
+                    .map_err(|_| Error::MissingArgument("path".into()))?
+                    .trim()
+                    .to_string(),
+            };
             let wanted = inv
                 .inline_str("as")
                 .map(|t| bare(t).to_string())
@@ -162,7 +170,10 @@ pub fn document() -> AsyncFnEndpoint {
                     .summary("negotiate a namespace document")
                     .input(
                         ArgSpec::new("path")
-                            .summary("the curated path, e.g. resmud/core (piped content works)")
+                            .summary(
+                                "the curated path, e.g. resmud/core — from a template \
+                                 binding, a named argument, or piped content",
+                            )
                             .class(XSD_STRING),
                     )
                     .input(

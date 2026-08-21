@@ -27,6 +27,29 @@ serde_json = "1"
 # place to discover that "muted" meant "illegible".
 ikigai-a11y = "0.2.0"
 
+# Server-only. `ikigai-web` is the inbound HTTP transport (method↔verb,
+# Accept↔conneg, and a strong ETag with If-None-Match already handled);
+# `ikigai-fs` gives golden-threaded urn:file:* so a registry edit invalidates
+# rather than needing a restart; `ikigai-sparql` is what the docs face queries
+# through.
+ikigai-web = { version = "0.1.16", optional = true }
+ikigai-fs = { version = "0.1.5", optional = true }
+ikigai-sparql = { version = "0.1.6", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+
+# --- the standalone server ---------------------------------------------------
+# Optional, so a library consumer never builds an HTTP stack or RocksDB. The
+# feature list IS the server's module manifest, in the ikigai-dev-server sense:
+# this binary links these and nothing else, so what it cannot reach is a
+# property of the build rather than of a config file.
+[features]
+server = ["dep:ikigai-web", "dep:ikigai-sparql", "dep:ikigai-fs", "dep:tokio"]
+
+[[bin]]
+name = "ikigai-name-server"
+path = "src/bin/server.rs"
+required-features = ["server"]
+
 [dev-dependencies]
 futures = "0.3"
 # The real SPARQL engine, so the docs face's term extraction is proved through a
