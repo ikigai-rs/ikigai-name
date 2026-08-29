@@ -1,0 +1,70 @@
+# Build the deployable server binary, so a VPS never needs a Rust toolchain.
+#
+# The resolver runs on an internet-facing box. Building there would put a
+# compiler, a registry cache and a source tree on the machine whose whole job is
+# to hand out documents — for no benefit, since nothing about the binary depends
+# on where it was compiled. So it is built here and shipped.
+#
+# Two triggers, because there are two reasons to want a binary:
+#   - a published GitHub Release  → the tarball is attached to it, and that
+#     asset is what the deploy runbook fetches
+#   - workflow_dispatch           → an artifact only, for redeploying a fix
+#     without minting a version nobody asked for
+#
+# Not a substitute for `ci`: this builds one target and does not lint or test.
+# The release-time gate is ci passing on the commit being released.
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    permissions:
+      # `gh release upload` writes an asset onto the release that triggered this.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # --locked so the shipped binary is built from the committed lockfile:
+      # a deploy artifact resolving different dependency versions than CI
+      # tested is the one difference that would be invisible until it ran.
+      - name: build
+        run: cargo build --release --features server --locked
+
+      # glibc is forward-compatible, not backward: a binary built here runs on a
+      # newer glibc and not on an older one. The runner's is older than Debian
+      # 13's, which is the deployment target — and the runbook proves it on the
+      # box with `--help` before anything depends on it, rather than trusting
+      # this comment.
+      - name: package
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          strip target/release/ikigai-name-server
+          name="ikigai-name-server-${version}-x86_64-unknown-linux-gnu"
+          mkdir -p "dist/$name"
+          cp target/release/ikigai-name-server README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "asset=dist/$name.tar.gz" >> "$GITHUB_ENV"
+          echo "sha=dist/$name.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ikigai-name-server-linux-x86_64
+          path: dist/*.tar.gz*
+
+      # Only a release has somewhere to attach to; a dispatch run stops at the
+      # artifact above.
+      - name: attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" "$asset" "$sha" --clobber
