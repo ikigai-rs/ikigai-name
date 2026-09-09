@@ -1,30 +1,12 @@
-# CI for ikigai-name (`urn:name:*`). Pure Rust with no platform-gated code, so
-# the three ordinary gates are the whole story — no macos job, and no wasm-lib
-# job until a wasm face exists.
 name: ci
-
 on:
+  push: { branches: [main] }
   pull_request:
-  push:
-    branches: [main]
-
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}   # never cancel main
 jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-
-      - name: fmt
-        run: cargo fmt --all -- --check
-
-      # --all-features so the optional server binary is linted and built too;
-      # without it `required-features` silently excludes it from every gate.
-      - name: clippy (all targets, all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: test
-        run: cargo test --all-features
+  ci:
+    uses: ikigai-rs/.github/.github/workflows/rust.yml@main
+    with:
+      features: "*"
