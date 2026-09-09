@@ -8,7 +8,7 @@
 //! ## Only one format is produced here
 //!
 //! Turtle is the hub, so it is served as stored. HTML is produced by asking
-//! [`crate::docs`] through the kernel. Everything else is reached by *selecting
+//! [`crate::docs`](mod@crate::docs) through the kernel. Everything else is reached by *selecting
 //! a transreptor chain* and driving it — the same mechanism the kernel's own
 //! `Meta` path uses, which means this face gains every format the host has a
 //! transreptor for and carries conversion code for none of them.
@@ -34,7 +34,7 @@ use ikigai_core::{
 
 /// Turtle: the hub representation, and the default when nothing is asked for.
 pub const CANONICAL: &str = "text/turtle";
-/// The HTML face is produced by [`crate::docs`], not by a transreptor.
+/// The HTML face is produced by [`crate::docs`](mod@crate::docs), not by a transreptor.
 pub const HTML: &str = "text/html";
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
