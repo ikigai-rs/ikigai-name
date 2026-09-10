@@ -182,6 +182,22 @@ raise it.
 | `urn:name:claim` | Sink | claim a prefix nobody holds |
 | `urn:name:admin` | Sink · Delete | change how a namespace resolves · retire it |
 
+Every read face takes its input by name or from piped `content` (`path` for
+`resolve` and `document`, `prefix` for `claim` and `admin`), so each is a
+pipeline citizen: `echo acme | sink urn:name:claim strategy=hosted source=…`.
+
+### Conformance
+
+The module passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
+— `tests/conformance.rs` walks every endpoint above and holds the five read
+faces to their `.cacheable()` marking over a threaded registry, then shows the
+same walk over a live registry reporting the downgrade on all five. What the
+suite cannot see is pinned by hand in the same file: a forced recomputation
+returns the same bytes; a claim overlapping a held prefix is a typed, permanent
+refusal that writes nothing; every declared output is the media type served;
+required means required; and the per-prefix administrative rule is reached only
+under a grant on some other prefix.
+
 ## Cacheability
 
 **Every read face marks itself cacheable, and that is a claim about the
@@ -250,8 +266,8 @@ authenticated transport.
 ## Status
 
 M1 complete: registry, claim rule, resolution, capability-scoped administration,
-the HTML documentation face, content negotiation, limits, and cacheability. Not
-yet published to crates.io.
+the HTML documentation face, content negotiation, limits, cacheability, and
+conformance. Not yet published to crates.io.
 
 Next: as-of resolution backed by the vocabulary's own git history, signed
 redirect provenance and succession, and peer mirroring — the properties that

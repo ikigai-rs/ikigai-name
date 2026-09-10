@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-name"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Persistent-identifier resolution as an ikigai module: urn:name:* resolves curated IRIs against an externalized, capability-scoped registry — hosted, redirected or mirrored — so a namespace outlives the domain that first served it."
@@ -52,6 +52,9 @@ required-features = ["server"]
 
 [dev-dependencies]
 futures = "0.3"
+# The module recipe as one test: `tests/conformance.rs` walks every endpoint
+# `space()` binds and reports every violation at once.
+ikigai-conformance = "0.1.0"
 # The real SPARQL engine, so the docs face's term extraction is proved through a
 # genuine module boundary rather than a hand-written stub of the results format.
 ikigai-sparql = "0.1.6"
