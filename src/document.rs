@@ -38,6 +38,7 @@ pub const CANONICAL: &str = "text/turtle";
 pub const HTML: &str = "text/html";
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+const TEXT_HTML_UTF8: &str = "text/html;charset=utf-8";
 
 /// The media type alone, without parameters — `text/turtle; charset=utf-8`
 /// negotiates as `text/turtle`.
@@ -193,7 +194,11 @@ pub fn document() -> AsyncFnEndpoint {
                             .optional()
                             .class(XSD_STRING),
                     )
-                    .output(CANONICAL),
+                    // The two faces produced HERE. Everything else is reached
+                    // through a transreptor the host may or may not bind, so it
+                    // is not this action's to declare (the `as` input says so).
+                    .output(CANONICAL)
+                    .output(TEXT_HTML_UTF8),
             ),
     )
 }

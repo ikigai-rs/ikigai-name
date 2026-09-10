@@ -80,6 +80,31 @@ fn required(inv: &Invocation<'_>, name: &'static str) -> Result<String> {
     Ok(value)
 }
 
+/// The `prefix` argument, with the piped-`content` fallback every mutating
+/// pipeline citizen offers: `echo acme | sink urn:name:claim strategy=…` names
+/// the prefix on the pipe, and a top-level `sink`'s body lands the same way.
+/// `prefix` by name wins when both are present.
+fn prefix_arg(inv: &Invocation<'_>) -> Result<String> {
+    let value = inv
+        .inline_str("prefix")
+        .or_else(|_| inv.inline_str("content"))
+        .map_err(|_| Error::MissingArgument("prefix".into()))?
+        .trim()
+        .to_string();
+    if value.is_empty() {
+        return Err(Error::MissingArgument("prefix".into()));
+    }
+    Ok(value)
+}
+
+/// The `content` input every mutating action declares: the prefix, when piped.
+fn content_spec() -> ArgSpec {
+    ArgSpec::new("content")
+        .summary("the prefix, when piped or sent as the body (the fallback for `prefix`)")
+        .optional()
+        .class(XSD_STRING)
+}
+
 /// Build the strategy named by `strategy=`, reading whichever companion
 /// argument that choice requires.
 fn strategy_from_args(inv: &Invocation<'_>) -> Result<Strategy> {
@@ -146,7 +171,7 @@ fn ok(message: String) -> Representation {
 pub fn claim() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("claim", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
-            let prefix = required(inv, "prefix")?;
+            let prefix = prefix_arg(inv)?;
             let strategy = strategy_from_args(inv)?;
             // `owner` is optional so the ordinary case needs no ceremony: the
             // claimant becomes the administrator. An operator provisioning on
@@ -183,9 +208,12 @@ pub fn claim() -> AsyncFnEndpoint {
                     .requires(CAP_CLAIM)
                     .input(
                         ArgSpec::new("prefix")
-                            .summary("the prefix to claim, e.g. resmud")
+                            .summary(
+                                "the prefix to claim, e.g. resmud (piped content is the fallback)",
+                            )
                             .class(XSD_STRING),
                     )
+                    .input(content_spec())
                     .input(
                         ArgSpec::new("strategy")
                             .summary("how it resolves")
@@ -226,7 +254,7 @@ pub fn claim() -> AsyncFnEndpoint {
 pub fn admin() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("admin", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
-            let prefix = required(inv, "prefix")?;
+            let prefix = prefix_arg(inv)?;
             require_admin(inv, &prefix)?;
             let mut registry = load(inv).await?;
             let entry = registry
@@ -269,9 +297,10 @@ pub fn admin() -> AsyncFnEndpoint {
                     .requires(CAP_ADMIN_ANY)
                     .input(
                         ArgSpec::new("prefix")
-                            .summary("the namespace to administer")
+                            .summary("the namespace to administer (piped content is the fallback)")
                             .class(XSD_STRING),
                     )
+                    .input(content_spec())
                     .input(
                         ArgSpec::new("strategy")
                             .summary("how it should resolve from now on")
@@ -307,9 +336,10 @@ pub fn admin() -> AsyncFnEndpoint {
                     .requires(CAP_ADMIN_ANY)
                     .input(
                         ArgSpec::new("prefix")
-                            .summary("the namespace to retire")
+                            .summary("the namespace to retire (piped content is the fallback)")
                             .class(XSD_STRING),
                     )
+                    .input(content_spec())
                     .input(
                         ArgSpec::new("reason")
                             .summary("why, for whoever dereferences an IRI under it")

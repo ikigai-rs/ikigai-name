@@ -88,12 +88,14 @@ pub(crate) async fn load(inv: &Invocation<'_>) -> Result<Registry> {
 }
 
 /// The `path` argument, with the piped-`content` fallback every pipeline
-/// citizen offers.
+/// citizen offers. Neither present is a typed `MissingArgument` naming `path`
+/// — the contract's name for it — so a caller (or `urn:kernel:validate`) can
+/// act on it rather than parse prose.
 fn path_arg(inv: &Invocation<'_>) -> Result<String> {
     let raw = inv
         .inline_str("path")
         .or_else(|_| inv.inline_str("content"))
-        .map_err(|_| Error::Endpoint("name: resolve needs a path".into()))?;
+        .map_err(|_| Error::MissingArgument("path".into()))?;
     Ok(raw.trim().to_string())
 }
 
@@ -311,14 +313,19 @@ mod tests {
         assert!(text.contains(REGISTRY_IRI), "names the source: {text}");
     }
 
+    /// A missing path is a typed `MissingArgument` naming the input the contract
+    /// declares, not prose a caller would have to parse.
     #[test]
-    fn resolve_with_no_path_explains_itself() {
+    fn resolve_with_no_path_names_the_missing_input() {
         let err = block_on(kernel_with(REGISTRY_JSON).issue(
             Request::new(Verb::Source, Iri::parse("urn:name:resolve").unwrap()),
             &Capability::root(),
         ))
         .expect_err("no path");
-        assert!(err.to_string().contains("needs a path"), "got: {err}");
+        assert!(
+            matches!(&err, Error::MissingArgument(name) if name == "path"),
+            "got: {err:?}"
+        );
     }
 
     #[test]
