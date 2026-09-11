@@ -107,6 +107,14 @@ prefix contains it or it contains any claimed prefix. Afterward overlap is not
 merely forbidden, it is unrepresentable, so **resolution never arbitrates and
 two tenants cannot answer for the same IRI**.
 
+Loading the file enforces the same rule. The registry is hand-edited, and a
+hand can write `resmud` and `resmud/core` side by side, so the loader rebuilds
+the registry by claiming each entry in turn — the one claim rule, not a second
+copy of it — and refuses the **whole** file at the first entry that rule would
+refuse, naming both prefixes. A bad registry is a configuration error of the
+same shape as malformed JSON: nothing in it is served, rather than a partial
+registry that would arbitrate by file order.
+
 Comparison is segment-wise, never textual: `acme` contains `acme/vocab` and is
 unrelated to `acmecorp`.
 

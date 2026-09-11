@@ -45,7 +45,7 @@ use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, ReprType,
     Representation, Result, Verb,
 };
-pub use registry::{ClaimError, Namespace, Registry, Strategy};
+pub use registry::{ClaimError, LoadError, Namespace, Registry, Strategy};
 
 /// The capability gating administration of a namespace. Real grants attenuate
 /// it per prefix (`urn:cap:name:admin:resmud`); the bare form is the wildcard
@@ -78,13 +78,12 @@ fn text_plain_utf8() -> ReprType {
 pub(crate) async fn load(inv: &Invocation<'_>) -> Result<Registry> {
     let iri = Iri::parse(REGISTRY_IRI).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
     let repr = inv.source(&iri).await?;
-    Registry::from_json(&repr.bytes).map_err(|e| {
-        // Name the resource, since the operator edits it by hand and a bare
-        // serde message gives no clue which file to open.
-        Error::Endpoint(format!(
-            "name: {REGISTRY_IRI} is not valid registry JSON: {e}"
-        ))
-    })
+    // Name the resource, since the operator edits it by hand and a bare
+    // serde message gives no clue which file to open. Malformed JSON and an
+    // overlapping pair of prefixes are the same failure here: a bad file, and
+    // nothing from it is served.
+    Registry::from_json(&repr.bytes)
+        .map_err(|e| Error::Endpoint(format!("name: {REGISTRY_IRI} is not a valid registry: {e}")))
 }
 
 /// The `path` argument, with the piped-`content` fallback every pipeline
@@ -279,6 +278,44 @@ mod tests {
             err.to_string().contains("nobody/here"),
             "names the path: {err}"
         );
+    }
+
+    /// A registry file with overlapping prefixes is refused as a whole at load,
+    /// so through the kernel NOTHING in it resolves — not the parent, not the
+    /// child, not an unrelated entry. Before this, `resmud/core` resolved to
+    /// whichever entry came first in the file.
+    #[test]
+    fn nothing_resolves_from_a_registry_with_overlapping_prefixes() {
+        const OVERLAPPING: &str = r#"{
+          "namespaces": [
+            {
+              "prefix": "resmud",
+              "owner": "urn:cap:name:admin:resmud",
+              "strategy": "hosted",
+              "source": "urn:file:resmud-vocab"
+            },
+            {
+              "prefix": "resmud/core",
+              "owner": "urn:cap:name:admin:resmud-core",
+              "strategy": "redirect",
+              "target": "https://resmud.example/core"
+            },
+            {
+              "prefix": "acme",
+              "owner": "urn:cap:name:admin:acme",
+              "strategy": "redirect",
+              "target": "https://acme.example/ns"
+            }
+          ]
+        }"#;
+        let kernel = kernel_with(OVERLAPPING);
+        for path in ["resmud/core", "resmud", "acme/thing"] {
+            let err = resolve_path(&kernel, path).expect_err("a refused registry serves nothing");
+            assert!(
+                matches!(&err, Error::Endpoint(m) if m.contains("\"resmud/core\"") && m.contains("\"resmud\"")),
+                "{path}: want the load refusal naming both prefixes, got: {err:?}"
+            );
+        }
     }
 
     #[test]

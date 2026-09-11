@@ -15,6 +15,14 @@
 //! **claim** time: a prefix may be claimed only when no claimed prefix contains
 //! it and it contains no claimed prefix. Afterwards overlap is not merely
 //! forbidden, it is *unrepresentable*, so resolution never arbitrates.
+//!
+//! "Unrepresentable" has to hold for a registry that arrives from a file as
+//! much as for one built by claims — the operator edits the file by hand, and a
+//! hand can write `resmud` and `resmud/core` side by side. So [`Registry::from_json`]
+//! does not merely parse: it rebuilds the registry by claiming each entry in
+//! turn, through the same [`Registry::claim`], and refuses the **whole** file
+//! at the first entry the claim rule would have refused. There is one rule,
+//! not a load rule and a claim rule that must be kept in step.
 
 use serde::{Deserialize, Serialize};
 
@@ -98,7 +106,10 @@ impl Default for Limits {
 /// The whole registry, as parsed from the operator's file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Registry {
-    /// Every claimed namespace. No two may overlap; see [`Registry::claim`].
+    /// Every claimed namespace. No two overlap: [`Registry::claim`] refuses an
+    /// overlapping claim and [`Registry::from_json`] refuses a file containing
+    /// one. (A `Registry` deserialized some other way carries no such promise —
+    /// `from_json` is the entry point precisely because it checks.)
     #[serde(default)]
     pub namespaces: Vec<Namespace>,
     /// This deployment's ceilings.
@@ -145,10 +156,78 @@ pub fn overlaps(a: &str, b: &str) -> bool {
     a[..shared] == b[..shared]
 }
 
+/// Why a registry file was refused as a whole.
+///
+/// Both cases are the operator's file being wrong, and both refuse the whole
+/// registry rather than the offending line: a resolver serving the entries it
+/// could make sense of would answer some IRIs from a file that is known to be
+/// bad, and the operator would learn about it one missing namespace at a time.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The bytes were not the documented JSON shape.
+    Json(serde_json::Error),
+    /// An entry the claim rule refuses. `prefix` is the entry that could not be
+    /// claimed; for an overlap, `error` names the earlier entry it collides
+    /// with, so the refusal names both offending prefixes.
+    Refused {
+        /// The prefix of the entry that was refused.
+        prefix: String,
+        /// Why the claim rule refused it.
+        error: ClaimError,
+    },
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Json(e) => write!(f, "not valid registry JSON: {e}"),
+            LoadError::Refused { prefix, error } => {
+                write!(f, "the namespace {prefix:?} cannot be claimed: {error}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LoadError::Json(e) => Some(e),
+            LoadError::Refused { .. } => None,
+        }
+    }
+}
+
+impl From<serde_json::Error> for LoadError {
+    fn from(e: serde_json::Error) -> Self {
+        LoadError::Json(e)
+    }
+}
+
 impl Registry {
-    /// Parse a registry from its JSON representation.
-    pub fn from_json(bytes: &[u8]) -> Result<Registry, serde_json::Error> {
-        serde_json::from_slice(bytes)
+    /// Parse a registry from its JSON representation, refusing the whole file
+    /// if any two entries overlap.
+    ///
+    /// Overlap is checked by **claiming each entry in turn** into an empty
+    /// registry, so the file is held to exactly the rule [`Registry::claim`]
+    /// applies — the same predicate, not a second one that could drift. A
+    /// refusal is a typed [`LoadError::Refused`] naming both prefixes, and
+    /// nothing from the file is served: a bad registry is a configuration
+    /// error of the same shape as malformed JSON, and a partially-served one
+    /// would arbitrate by file order, which is the thing this module exists
+    /// not to do.
+    pub fn from_json(bytes: &[u8]) -> Result<Registry, LoadError> {
+        let parsed: Registry = serde_json::from_slice(bytes)?;
+        let mut registry = Registry {
+            namespaces: Vec::with_capacity(parsed.namespaces.len()),
+            limits: parsed.limits,
+        };
+        for namespace in parsed.namespaces {
+            let prefix = namespace.prefix.clone();
+            registry
+                .claim(namespace)
+                .map_err(|error| LoadError::Refused { prefix, error })?;
+        }
+        Ok(registry)
     }
 
     /// The namespace claiming `path`, if any.
@@ -396,5 +475,107 @@ mod tests {
             Registry::from_json(b"{}").expect("parses"),
             Registry::default()
         );
+    }
+
+    /// The finding from the conformance adoption (#9): a hand-edited file with
+    /// `resmud` and `resmud/core` used to load, and `lookup` answered with
+    /// whichever came first. Now the whole file is refused, the refusal names
+    /// both prefixes, and nothing in it resolves.
+    #[test]
+    fn a_file_with_overlapping_prefixes_is_refused_whole() {
+        let json = br#"{
+          "namespaces": [
+            {
+              "prefix": "resmud",
+              "owner": "urn:cap:name:admin:resmud",
+              "strategy": "hosted",
+              "source": "urn:file:resmud-vocab"
+            },
+            {
+              "prefix": "resmud/core",
+              "owner": "urn:cap:name:admin:resmud-core",
+              "strategy": "redirect",
+              "target": "https://resmud.example/core"
+            }
+          ]
+        }"#;
+        let err = Registry::from_json(json).expect_err("overlap must refuse the file");
+        match &err {
+            LoadError::Refused { prefix, error } => {
+                assert_eq!(prefix, "resmud/core");
+                assert_eq!(error, &ClaimError::Overlaps("resmud".into()));
+            }
+            other => panic!("want a typed Refused, got: {other:?}"),
+        }
+        let message = err.to_string();
+        assert!(
+            message.contains("\"resmud/core\"") && message.contains("\"resmud\""),
+            "the message names both prefixes: {message}"
+        );
+    }
+
+    /// Order in the file must not matter: the parent-after-child spelling of
+    /// the same file is refused too, naming the same two prefixes.
+    #[test]
+    fn overlap_is_refused_whichever_entry_comes_first() {
+        let json = serde_json::to_vec(&registry(&["resmud/core", "resmud"])).expect("serializes");
+        match Registry::from_json(&json).expect_err("overlap must refuse the file") {
+            LoadError::Refused { prefix, error } => {
+                assert_eq!(prefix, "resmud");
+                assert_eq!(error, ClaimError::Overlaps("resmud/core".into()));
+            }
+            other => panic!("want a typed Refused, got: {other:?}"),
+        }
+    }
+
+    /// The load rule IS the claim rule. For every pair of prefixes, a file
+    /// holding both loads exactly when the second could be claimed over the
+    /// first — including the empty-prefix case, which the claim rule refuses
+    /// and a file must not smuggle past it. `from_json` gets this by
+    /// construction (it claims each entry), and this pins that construction so
+    /// a future "faster" load path cannot quietly grow a second predicate.
+    #[test]
+    fn load_and_claim_share_one_rule() {
+        let pairs = [
+            ("resmud", "acme"),
+            ("resmud", "resmud"),
+            ("resmud", "resmud/core"),
+            ("resmud/core", "resmud"),
+            ("acme", "acmecorp"),
+            ("resmud", "/resmud/"),
+            ("resmud", ""),
+            ("resmud", "///"),
+            ("a/b/c", "a/b"),
+            ("a/b", "a/c"),
+        ];
+        for (first, second) in pairs {
+            let by_claim = registry(&[first]).may_claim(second);
+            let json = serde_json::to_vec(&registry(&[first, second])).expect("serializes");
+            let by_load = Registry::from_json(&json).map(|_| ()).map_err(|e| match e {
+                LoadError::Refused { prefix, error } => {
+                    assert_eq!(prefix, second, "the refused entry is the second");
+                    error
+                }
+                LoadError::Json(e) => panic!("the file is well-formed JSON: {e}"),
+            });
+            assert_eq!(
+                by_load, by_claim,
+                "loading [{first:?}, {second:?}] must agree with claiming {second:?} over {first:?}"
+            );
+        }
+    }
+
+    /// The other half of "refuse the whole file": a registry that does load
+    /// is exactly the file's entries, in the file's order, with its limits.
+    #[test]
+    fn a_valid_file_loads_every_entry_in_order() {
+        let reg = Registry {
+            namespaces: vec![hosted("resmud"), hosted("acme"), hosted("acme-labs")],
+            limits: Limits {
+                max_document_bytes: 4096,
+            },
+        };
+        let json = serde_json::to_vec(&reg).expect("serializes");
+        assert_eq!(Registry::from_json(&json).expect("loads"), reg);
     }
 }
