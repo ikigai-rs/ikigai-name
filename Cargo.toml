@@ -31,10 +31,14 @@ ikigai-a11y = "0.2.0"
 # Accept↔conneg, and a strong ETag with If-None-Match already handled);
 # `ikigai-fs` gives golden-threaded urn:file:* so a registry edit invalidates
 # rather than needing a restart; `ikigai-sparql` is what the docs face queries
-# through.
+# through — 0.1.8, not the 0.1.6 the code compiles against, because below it the
+# graph faces serve `text/turtle` while declaring only
+# `application/sparql-results+json`, and `ikigai-web`'s Accept-conneg answers
+# from the DECLARED outputs: the server would announce a manifold it does not
+# serve. The floor is a contract the binary depends on, not just an API.
 ikigai-web = { version = "0.1.16", optional = true }
 ikigai-fs = { version = "0.1.5", optional = true }
-ikigai-sparql = { version = "0.1.6", optional = true }
+ikigai-sparql = { version = "0.1.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 
 # --- the standalone server ---------------------------------------------------
@@ -54,7 +58,7 @@ required-features = ["server"]
 futures = "0.3"
 # The module recipe as one test: `tests/conformance.rs` walks every endpoint
 # `space()` binds and reports every violation at once.
-ikigai-conformance = "0.1.0"
+ikigai-conformance = "0.2.0"
 # The real SPARQL engine, so the docs face's term extraction is proved through a
 # genuine module boundary rather than a hand-written stub of the results format.
-ikigai-sparql = "0.1.6"
+ikigai-sparql = "0.1.8"

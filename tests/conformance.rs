@@ -37,9 +37,10 @@
 //! The docs face queries `urn:sparql:select` through the kernel. [`conforms`]
 //! binds a stand-in that answers a canned result set after resolving `graph=`
 //! (so the vocabulary's thread propagates); [`conforms_over_the_real_engine`]
-//! walks the same suite with `ikigai-sparql` bound, holding the MODULE's
-//! endpoints clean while recording the engine's own findings (0.1.7 predates its
-//! adoption; 0.1.8 is not yet published).
+//! walks the same suite with `ikigai-sparql` bound and holds BOTH sides clean —
+//! 0.1.8 typed its inputs and declared the RDF media types its graph faces
+//! actually serve, so the cross-module walk is a real end-to-end conformance
+//! assertion rather than a recording of someone else's residue.
 //!
 //! ## What the suite cannot see, pinned by hand
 //!
@@ -403,9 +404,11 @@ fn suite() -> Suite {
     Suite::new()
         .fixture(Fixture::new(RESOLVE, Verb::Source).arg("path", "resmud/core"))
         .fixture(
-            Fixture::new(DOCUMENT, Verb::Source)
-                .arg("path", "resmud/core")
-                .binding("path", "resmud/core"),
+            // No `.binding("path", …)`: DOCUMENT is bound at an EXACT IRI, so a
+            // binding has no template variable to fill and is silently ignored —
+            // conformance 0.2.0's DECLARATIONS check reports exactly that. The
+            // templated face is `urn:name:doc:{path}`, a different entry.
+            Fixture::new(DOCUMENT, Verb::Source).arg("path", "resmud/core"),
         )
         .fixture(Fixture::new(DOCS, Verb::Source).arg("prefix", "resmud"))
         // A prefix nobody holds: the pipeline probe lands this claim under root.
@@ -1338,7 +1341,15 @@ fn errors_carry_no_registry_body() {
 #[test]
 fn bound_at_the_servers_template() {
     let w = world_with(true, true, false);
-    let report = declared(stand_in_suite()).run_blocking(&w.kernel);
+    // The binding lives HERE, not in `suite()`: it is meaningful only in the
+    // world that binds the template, and conformance 0.2.0's DECLARATIONS check
+    // reports it as inert anywhere else. `target_for` scans every fixture of the
+    // id for the variable, and `args_for` takes the FIRST matching id+verb, so a
+    // binding-only fixture after the argument-carrying one drives the template
+    // entry without disturbing the exact one.
+    let suite = declared(stand_in_suite())
+        .fixture(Fixture::new(DOCUMENT, Verb::Source).binding("path", "resmud/core"));
+    let report = suite.run_blocking(&w.kernel);
     eprintln!("[threaded registry, document also bound at {DOC_TEMPLATE}]\n{report}");
     assert_eq!(report.findings.len(), 1, "{report}");
     let finding = &report.findings[0];
@@ -1363,11 +1374,17 @@ fn bound_at_the_servers_template() {
     assert_eq!(report.actions, 13, "{report}");
 }
 
-/// The same suite over the real engine. The MODULE's endpoints are held clean —
-/// the docs face's terms come from a real `SELECT … GRAPH <…>` — while the
-/// engine's own findings are recorded, not hidden: `ikigai-sparql` 0.1.7 is what
-/// crates.io serves and its inputs predate its adoption (ikigai-linkeddata #20,
-/// 0.1.8 unpublished). Once the lock moves to 0.1.8 this walk is clean outright.
+/// The same suite over the real engine: the docs face's terms come from a real
+/// `SELECT … GRAPH <…>`, and the walk is clean OUTRIGHT — the module's endpoints
+/// and `ikigai-sparql`'s alike. Until 0.1.8 the engine left a residue this test
+/// recorded rather than hid (untyped `query`/`graph`/`as`, and `describe`/
+/// `construct` serving `text/turtle` while declaring only
+/// `application/sparql-results+json`); 0.1.8 fixed both, and the graph faces now
+/// declare all six RDF media types, so the walk probes each one.
+///
+/// Asserting `is_clean()` rather than filtering to the engine's findings is
+/// deliberate: a loop over a residue that is now empty asserts nothing, and
+/// would take a fresh ARGSPECS regression in either crate without a word.
 #[test]
 fn conforms_over_the_real_engine() {
     let w = world_with(true, false, true);
@@ -1390,22 +1407,7 @@ fn conforms_over_the_real_engine() {
     });
     let report = suite.run_blocking(&w.kernel);
     eprintln!("[threaded registry, real ikigai-sparql]\n{report}");
-    let module: Vec<&ikigai_conformance::Finding> = report
-        .findings
-        .iter()
-        .filter(|f| !f.endpoint.starts_with("sparql-"))
-        .collect();
-    assert!(
-        module.is_empty(),
-        "the module's own findings: {module:?}\n{report}"
-    );
-    for f in &report.findings {
-        assert_eq!(
-            f.check,
-            Check::ArgSpecs,
-            "the engine's residue is its untyped inputs: {f}"
-        );
-    }
+    assert!(report.is_clean(), "{report}");
     assert_eq!(
         report.endpoints, 13,
         "seven, two fixtures, four forms: {report}"
