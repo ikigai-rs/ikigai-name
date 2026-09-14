@@ -273,13 +273,17 @@ authenticated transport.
 
 ## Status
 
-M1 complete: registry, claim rule, resolution, capability-scoped administration,
-the HTML documentation face, content negotiation, limits, cacheability, and
-conformance. Not yet published to crates.io.
+**Built and walked clean by `ikigai-conformance`:** the registry, the claim rule,
+resolution, capability-scoped administration, the HTML documentation face, content
+negotiation, limits and cacheability.
 
-Next: as-of resolution backed by the vocabulary's own git history, signed
-redirect provenance and succession, and peer mirroring — the properties that
-make a permanence promise credible.
+**Not on crates.io**, so depend on it by git rather than by version. Running the
+`server` feature needs a directory holding `registry.json` and the documents it
+points at; embedded, a host binds `ikigai_name::space()` and nothing else.
+
+**Not built**, and a permanence promise is weaker without them: as-of resolution
+backed by the vocabulary's own git history, signed redirect provenance and
+succession, and peer mirroring.
 
 ## License
 
