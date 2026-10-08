@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-name"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Persistent-identifier resolution as an ikigai module: urn:name:* resolves curated IRIs against an externalized, capability-scoped registry — hosted, redirected or mirrored — so a namespace outlives the domain that first served it."
