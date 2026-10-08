@@ -14,9 +14,15 @@ categories = ["web-programming", "data-structures"]
 [dependencies]
 # The released kernel, consumed from crates.io — the SAME version the hosts use,
 # so a host links exactly one `ikigai-core` (no duplicate-crate type mismatch).
-# 0.1.54 is the true minimum: `AsyncFnEndpoint` is what lets a resolve read its
-# registry back THROUGH the kernel rather than off the filesystem.
-ikigai-core = "0.1.54"
+# 0.1.86 is the floor for a CONTRACT, not an API: from 0.1.86 core treats
+# `urn:cap:<family>:<qualifier>:-<rule>` as an EXCLUSION (`is_deny_scope`) that
+# `allows()` never grants, so `urn:cap:name:admin:<prefix>` reserves a prefix
+# beginning with `-`. This crate refuses such a prefix (and a deny-shaped
+# `owner`) with that rule, and below 0.1.86 the refusal would guard against
+# nothing and `is_deny_scope` would not exist (ledger #874). Before it, 0.1.54
+# was the minimum: `AsyncFnEndpoint` lets a resolve read its registry back
+# THROUGH the kernel rather than off the filesystem.
+ikigai-core = "0.1.86"
 async-trait = "0.1"
 # The registry is data the operator edits, so it is parsed, not compiled in.
 # JSON matches the house configuration format (edge-routes.json, clients.json).
