@@ -20,6 +20,18 @@
 //! which prefix the request names. That is the parameterized-ACL shape used for
 //! filesystem and network scopes.
 //!
+//! ## A prefix never begins with `-`
+//!
+//! The prefix is the last segment of `urn:cap:name:admin:<prefix>`, which is one
+//! of the two positions core RESERVES for exclusions ([`is_deny_scope`]: a rule
+//! beginning with `-`). So `-acme` would be administered by
+//! `urn:cap:name:admin:-acme`, a token core keeps through every narrowing and
+//! never grants: the claimant would own a namespace nobody, not even they, could
+//! ever administer, and the refusal would read as a puzzling `Denied` naming the
+//! very token they hold. Both faces refuse such a prefix up front instead, as an
+//! [`Error::InvalidArgument`] that says why, before any capability check. For
+//! the same reason a claim refuses an `owner` that is itself deny-shaped.
+//!
 //! ## Retirement, not release
 //!
 //! There is no way to free a prefix. See [`Strategy::Retired`]: handing a used
@@ -29,8 +41,8 @@
 use crate::registry::{ClaimError, Namespace, Registry, Strategy};
 use crate::{load, REGISTRY_IRI};
 use ikigai_core::{
-    ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation, InvokeFuture,
-    Iri, ReprType, Representation, Request, Result, Verb,
+    is_deny_scope, ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation,
+    InvokeFuture, Iri, ReprType, Representation, Request, Result, Verb,
 };
 
 /// The capability permitting a *new* namespace to be claimed — the signup gate.
@@ -94,7 +106,43 @@ fn prefix_arg(inv: &Invocation<'_>) -> Result<String> {
     if value.is_empty() {
         return Err(Error::MissingArgument("prefix".into()));
     }
+    refuse_reserved_prefix(&value)?;
     Ok(value)
+}
+
+/// Refuse a prefix that begins with `-` (see the module docs).
+///
+/// Exactly the reserved position and no more: a `-` anywhere else (`acme-corp`,
+/// `acme/-draft`, `/-acme`) lands past it in `urn:cap:name:admin:<prefix>`, so
+/// the scope is an ordinary grant and the namespace is administrable.
+fn refuse_reserved_prefix(prefix: &str) -> Result<()> {
+    if prefix.starts_with('-') {
+        return Err(Error::InvalidArgument {
+            name: "prefix".into(),
+            detail: format!(
+                "a namespace prefix cannot begin with `-`: its administrative capability \
+                 `{}` would be an exclusion (a deny-shaped scope), which no grant can \
+                 satisfy, so nobody could ever administer {prefix:?}",
+                admin_scope(prefix)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Refuse an `owner` that is an exclusion rather than a grant: it could never be
+/// held as authority, so it cannot administer anything.
+fn refuse_deny_owner(owner: &str) -> Result<()> {
+    if is_deny_scope(owner) {
+        return Err(Error::InvalidArgument {
+            name: "owner".into(),
+            detail: format!(
+                "`{owner}` is an exclusion (a deny-shaped capability scope), not a grant; \
+                 no capability can ever satisfy it, so it cannot own a namespace"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// The `content` input every mutating action declares: the prefix, when piped.
@@ -180,6 +228,7 @@ pub fn claim() -> AsyncFnEndpoint {
                 .inline_str("owner")
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|_| admin_scope(&prefix));
+            refuse_deny_owner(&owner)?;
 
             let mut registry = load(inv).await?;
             registry
@@ -209,7 +258,8 @@ pub fn claim() -> AsyncFnEndpoint {
                     .input(
                         ArgSpec::new("prefix")
                             .summary(
-                                "the prefix to claim, e.g. resmud (piped content is the fallback)",
+                                "the prefix to claim, e.g. resmud; never beginning with `-` \
+                                 (piped content is the fallback)",
                             )
                             .class(XSD_STRING),
                     )
@@ -715,6 +765,167 @@ mod tests {
         )
         .expect_err("nothing to administer");
         assert!(matches!(err, Error::NotFound(_)), "got: {err:?}");
+    }
+
+    // --- the reserved deny position (ledger #874) ---------------------------
+
+    fn is_invalid(err: &Error, arg: &str) -> bool {
+        matches!(err, Error::InvalidArgument { name, .. } if name == arg)
+    }
+
+    /// The defect this refusal exists for, pinned against core: the scope a
+    /// `-acme` claim would hand its owner is an exclusion, and core never grants
+    /// one even to its holder. If core ever stops treating it so, the refusal
+    /// below is guarding nothing and this test says so first.
+    #[test]
+    fn a_dash_prefix_would_get_an_admin_scope_core_never_grants() {
+        let scope = admin_scope("-acme");
+        assert!(is_deny_scope(&scope), "{scope} is in the reserved position");
+        assert!(
+            !owner_of("-acme").allows(&scope),
+            "held, and still not granted"
+        );
+        assert!(!is_deny_scope(&admin_scope("acme-corp")));
+        assert!(!is_deny_scope(&admin_scope("acme/-draft")));
+        assert!(!is_deny_scope(&admin_scope("/-acme")));
+    }
+
+    /// Without the refusal this claim SUCCEEDED (reproduced on core 0.1.86) and
+    /// recorded an owner that could never administer it: a later admin call as
+    /// that owner came back `Denied` naming the very token the caller held.
+    #[test]
+    fn a_prefix_beginning_with_a_dash_cannot_be_claimed() {
+        let store = Store::new(EMPTY);
+        let kernel = kernel(&store);
+        let err = call(
+            &kernel,
+            Verb::Sink,
+            "urn:name:claim",
+            &[
+                ("prefix", "-acme"),
+                ("strategy", "redirect"),
+                ("target", "https://acme.example/ns"),
+            ],
+            &claimant(),
+        )
+        .expect_err("reserved position");
+        assert!(is_invalid(&err, "prefix"), "got: {err:?}");
+        let text = err.to_string();
+        assert!(text.contains("cannot begin with `-`"), "says why: {text}");
+        assert!(
+            text.contains("urn:cap:name:admin:-acme"),
+            "names the scope: {text}"
+        );
+
+        // The piped form reaches the same check.
+        let err = call(
+            &kernel,
+            Verb::Sink,
+            "urn:name:claim",
+            &[
+                ("content", "-acme\n"),
+                ("strategy", "redirect"),
+                ("target", "https://acme.example/ns"),
+            ],
+            &claimant(),
+        )
+        .expect_err("piped, still reserved");
+        assert!(is_invalid(&err, "prefix"), "got: {err:?}");
+        assert!(store.read().namespaces.is_empty(), "nothing was written");
+    }
+
+    /// Only the reserved position is refused: a `-` anywhere else is an ordinary
+    /// character and the namespace is administrable by its owner.
+    #[test]
+    fn a_dash_past_the_reserved_position_is_an_ordinary_prefix() {
+        for prefix in ["acme-corp", "acme/-draft"] {
+            let store = Store::new(EMPTY);
+            let kernel = kernel(&store);
+            call(
+                &kernel,
+                Verb::Sink,
+                "urn:name:claim",
+                &[
+                    ("prefix", prefix),
+                    ("strategy", "redirect"),
+                    ("target", "https://acme.example/ns"),
+                ],
+                &claimant(),
+            )
+            .unwrap_or_else(|e| panic!("{prefix} claims: {e}"));
+            call(
+                &kernel,
+                Verb::Sink,
+                "urn:name:admin",
+                &[
+                    ("prefix", prefix),
+                    ("strategy", "redirect"),
+                    ("target", "https://acme.example/v2"),
+                ],
+                &owner_of(prefix),
+            )
+            .unwrap_or_else(|e| panic!("{prefix} is administrable: {e}"));
+        }
+    }
+
+    /// A hand-edited registry can still carry a `-` prefix (the file loader is
+    /// not this face). Administering it says why it cannot work, BEFORE the
+    /// capability check, rather than a `Denied` naming the token the caller holds.
+    #[test]
+    fn administering_a_dash_prefix_is_refused_before_the_capability_check() {
+        let store = Store::new(
+            r#"{"namespaces":[{"prefix":"-acme","owner":"urn:cap:name:admin:-acme",
+                "strategy":"redirect","target":"https://acme.example/ns"}]}"#,
+        );
+        let kernel = kernel(&store);
+        for (verb, args) in [
+            (
+                Verb::Sink,
+                vec![
+                    ("prefix", "-acme"),
+                    ("strategy", "redirect"),
+                    ("target", "https://x.example/"),
+                ],
+            ),
+            (Verb::Delete, vec![("prefix", "-acme")]),
+        ] {
+            let err = call(&kernel, verb, "urn:name:admin", &args, &owner_of("-acme"))
+                .expect_err("reserved position");
+            assert!(is_invalid(&err, "prefix"), "{verb:?} got: {err:?}");
+            assert!(err.to_string().contains("cannot begin with `-`"));
+        }
+        assert_eq!(
+            store.read().namespaces[0].strategy,
+            Strategy::Redirect {
+                target: "https://acme.example/ns".into()
+            },
+            "the registry must be untouched"
+        );
+    }
+
+    /// The other caller-chosen value that can land in a reserved position: an
+    /// explicit `owner`. A deny-shaped one can never be held as authority.
+    #[test]
+    fn a_deny_shaped_owner_is_refused() {
+        for owner in ["urn:cap:name:admin:-acme", "urn:cap:net:-acme.example"] {
+            let store = Store::new(EMPTY);
+            let err = call(
+                &kernel(&store),
+                Verb::Sink,
+                "urn:name:claim",
+                &[
+                    ("prefix", "acme"),
+                    ("strategy", "redirect"),
+                    ("target", "https://acme.example/ns"),
+                    ("owner", owner),
+                ],
+                &claimant(),
+            )
+            .expect_err("an exclusion owns nothing");
+            assert!(is_invalid(&err, "owner"), "got: {err:?}");
+            assert!(err.to_string().contains("exclusion"), "says why: {err}");
+            assert!(store.read().namespaces.is_empty(), "nothing was written");
+        }
     }
 
     // --- the declared contract ---------------------------------------------

@@ -133,6 +133,18 @@ kernel enforces — and the exact per-prefix grant is checked at invocation, sin
 only that code knows which prefix a request names. Holding one namespace's admin
 capability therefore confers nothing over anyone else's.
 
+**A prefix never begins with `-`.** The prefix sits where `ikigai-core` (0.1.86 and
+later) reads a leading `-` as an *exclusion*: `urn:cap:name:admin:-acme` is a
+deny-shaped scope that core keeps through every narrowing and never grants, so a
+namespace called `-acme` could never be administered by anyone, its claimant
+included. `urn:name:claim` and `urn:name:admin` therefore refuse such a prefix as
+an invalid argument that says why, before any capability check, and a claim
+refuses an explicit `owner` that is itself deny-shaped. A `-` anywhere else
+(`acme-corp`, `acme/-draft`) is an ordinary character. The registry file is not
+checked for this: a hand-written `-acme` entry still resolves, and administering
+it through `urn:name:admin` is refused with the same explanation (edit the file
+instead).
+
 ### Retirement, never release
 
 There is no way to free a prefix. Handing a used one to a new owner would let
