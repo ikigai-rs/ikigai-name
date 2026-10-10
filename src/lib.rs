@@ -39,7 +39,7 @@ pub mod registry;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
 pub use docs::docs;
-pub use document::document;
+pub use document::{doc, document, DOC_TEMPLATE};
 pub use health::health;
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, ReprType,

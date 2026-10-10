@@ -448,13 +448,14 @@ dependencies = [
 
 [[package]]
 name = "ikigai-web"
-version = "0.1.16"
+version = "0.1.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82d09123522f563873eb351f39cb435f78044dc2d65e5fee6e4efddecaf73dbe"
+checksum = "1c143480a4ec86edf6570f53a7f66faad8508ac8cc6ba546476f5c59412805df"
 dependencies = [
  "blake3",
  "chrono",
  "ikigai-core",
+ "libc",
  "serde_json",
  "tokio",
 ]
@@ -904,6 +905,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",

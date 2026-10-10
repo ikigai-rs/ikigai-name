@@ -39,11 +39,8 @@ use ikigai_core::{
     AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, Kernel, UriTemplate,
     Verb,
 };
-use ikigai_name::REGISTRY_IRI;
+use ikigai_name::{DOC_TEMPLATE, REGISTRY_IRI};
 use ikigai_web::{fixed_cap, EdgeConfig, Route, RouteTable};
-
-/// The IRI whose trailing variable carries the curated path.
-const DOC_TEMPLATE: &str = "urn:name:doc:{path}";
 
 /// What this host was told to do. Flags and a config root only — no environment
 /// variables, which are the banned third channel.
@@ -166,10 +163,12 @@ async fn main() -> std::io::Result<()> {
     let names = ikigai_name::space()
         // The path-carrying face, bound alongside the plain `urn:name:document`
         // so both spellings resolve: an IRI whose tail IS the path, and the
-        // argument form the REPL and tests use.
+        // argument form the REPL and tests use. `doc()`, not `document()`: the
+        // same handler, but it declares `path` as the template's binding, which
+        // is what lets the manifold (and `?description`) drive this entry.
         .bind(
             UriTemplate::parse(DOC_TEMPLATE).expect("DOC_TEMPLATE is a valid template"),
-            ikigai_name::document(),
+            ikigai_name::doc(),
         )
         .bind(Exact::new(REGISTRY_IRI), registry_alias(options.registry));
 
