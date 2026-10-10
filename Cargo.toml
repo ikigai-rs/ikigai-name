@@ -14,7 +14,10 @@ categories = ["web-programming", "data-structures"]
 [dependencies]
 # The released kernel, consumed from crates.io — the SAME version the hosts use,
 # so a host links exactly one `ikigai-core` (no duplicate-crate type mismatch).
-# 0.1.86 is the floor for a CONTRACT, not an API: from 0.1.86 core treats
+# 0.1.89 is the floor for `space_iri` and for `bind` dropping a space's name,
+# which is what lets `space()` claim `urn:iki:space:name` (ledger #987) without
+# a host's extension carrying that claim over different doors.
+# Before it, 0.1.86 was the floor for a CONTRACT, not an API: from 0.1.86 core treats
 # `urn:cap:<family>:<qualifier>:-<rule>` as an EXCLUSION (`is_deny_scope`) that
 # `allows()` never grants, so `urn:cap:name:admin:<prefix>` reserves a prefix
 # beginning with `-`. This crate refuses such a prefix (and a deny-shaped
@@ -22,7 +25,7 @@ categories = ["web-programming", "data-structures"]
 # nothing and `is_deny_scope` would not exist (ledger #874). Before it, 0.1.54
 # was the minimum: `AsyncFnEndpoint` lets a resolve read its registry back
 # THROUGH the kernel rather than off the filesystem.
-ikigai-core = "0.1.86"
+ikigai-core = "0.1.89"
 async-trait = "0.1"
 # The registry is data the operator edits, so it is parsed, not compiled in.
 # JSON matches the house configuration format (edge-routes.json, clients.json).
@@ -63,8 +66,9 @@ required-features = ["server"]
 [dev-dependencies]
 futures = "0.3"
 # The module recipe as one test: `tests/conformance.rs` walks every endpoint
-# `space()` binds and reports every violation at once.
-ikigai-conformance = "0.2.0"
+# `space()` binds and reports every violation at once. 0.6.0 for SPACE-NAME,
+# which holds `space()` to the name it claims.
+ikigai-conformance = "0.6.0"
 # The real SPARQL engine, so the docs face's term extraction is proved through a
 # genuine module boundary rather than a hand-written stub of the results format.
 ikigai-sparql = "0.1.8"
