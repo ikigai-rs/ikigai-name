@@ -402,6 +402,9 @@ fn text(repr: &Representation) -> String {
 /// The suite, configured for this module (see the file docs for why each line).
 fn suite() -> Suite {
     Suite::new()
+        // `space()` is configuration-free, so it names itself (SPACE-NAME): two
+        // calls claim `urn:iki:space:name` over the same seven doors.
+        .self_named_space("name", ikigai_name::space)
         .fixture(Fixture::new(RESOLVE, Verb::Source).arg("path", "resmud/core"))
         .fixture(
             // No `.binding("path", …)`: DOCUMENT is bound at an EXACT IRI, so a
@@ -427,6 +430,17 @@ fn suite() -> Suite {
                 .arg("origin", "https://acme.example/ns"),
         )
         .fixture(Fixture::new(ADMIN, Verb::Delete).arg("prefix", "acme"))
+        // conformance 0.6.0's CACHEABLE: the vocabulary fixture caches under its
+        // own name with no Sink, so nothing THROUGH the kernel can cut it. It
+        // stands in for a watched file, whose freshness comes from the watcher's
+        // cut, and here the tests are the watcher (`w.kernel.cut(VOCAB_IRI)`).
+        // That cut is external to the walk, so the check cannot see it.
+        .opt_out_check(
+            "vocab",
+            Check::Cacheable,
+            "fixture standing in for a watched file: the test issues the watcher's cut \
+             (`kernel.cut(VOCAB_IRI)`), which the walk cannot observe",
+        )
         .opt_out(
             "registry-source",
             Some(Verb::Sink),
@@ -483,6 +497,11 @@ fn conforms() {
     assert!(report.is_clean(), "{report}");
     assert_shape(&report);
     assert_eq!(report.declared.cacheable, READ_FACES, "{report}");
+    assert_eq!(
+        ikigai_core::space_iri("name").as_str(),
+        ikigai_name::SPACE_ID,
+        "the exported const is the name the suite checked"
+    );
 
     // The walk's footprint on the store (PENDING #13/#40/#60): the pipeline probe
     // fired `claim` once, `admin`'s Sink once AND its Delete once, under root —

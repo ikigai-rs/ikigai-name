@@ -27,6 +27,9 @@ Embedded in a larger host instead, the module is just a space to bind:
 let kernel = Kernel::new(Arc::new(ikigai_name::space()));
 ```
 
+`space()` names itself `urn:iki:space:name` (`ikigai_name::SPACE_ID`), so
+topology, `answered_by` and the space diagrams show it by that name.
+
 ```sh
 ikigai -c 'source urn:name:resolve path=resmud/core'
 # resmud	hosted	urn:file:resmud-vocab

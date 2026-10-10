@@ -191,7 +191,15 @@ pub fn resolve() -> AsyncFnEndpoint {
     )
 }
 
+/// The name [`space`] claims: `urn:iki:space:name`.
+pub const SPACE_ID: &str = "urn:iki:space:name";
+
 /// Every `urn:name:*` endpoint, ready to bind into a host.
+///
+/// Configuration-free (it reads nothing while building: the registry is read
+/// through the kernel at request time), so it names itself [`SPACE_ID`]. A host
+/// that binds more doors onto it gets an anonymous space back, since core
+/// 0.1.89, and names the result itself.
 pub fn space() -> ikigai_core::EndpointSpace {
     ikigai_core::EndpointSpace::new()
         .bind(Exact::new("urn:name:registry"), registry_endpoint())
@@ -201,6 +209,7 @@ pub fn space() -> ikigai_core::EndpointSpace {
         .bind(Exact::new("urn:name:docs"), docs())
         .bind(Exact::new("urn:name:document"), document())
         .bind(Exact::new("urn:name:health"), health())
+        .named(ikigai_core::space_iri("name"))
 }
 
 #[cfg(test)]
