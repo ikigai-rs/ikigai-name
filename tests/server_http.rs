@@ -24,6 +24,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const VOCAB: &str = "@prefix rm: <https://iriref.org/resmud/core#> .\n\
@@ -34,6 +35,23 @@ const REGISTRY: &str = r#"{"namespaces":[
   {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:file:vocab/core.ttl"}
 ]}"#;
 
+/// A scratch root no other server in this process shares.
+fn scratch_root() -> PathBuf {
+    // Nanos alone are not unique: the clock ticks coarser than its unit
+    // (microseconds on macOS), so two tests starting together read the same
+    // value. The counter is what disambiguates (ledger #163).
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "ikigai-name-http-{}-{nanos}-{n}",
+        std::process::id()
+    ))
+}
+
 /// A running server over a scratch root, killed and cleaned up on drop.
 struct Server {
     child: Child,
@@ -43,12 +61,7 @@ struct Server {
 
 impl Server {
     fn start() -> Server {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock after epoch")
-            .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("ikigai-name-http-{}-{nanos}", std::process::id()));
+        let root = scratch_root();
         std::fs::create_dir_all(root.join("vocab")).expect("scratch root");
         std::fs::write(root.join("vocab/core.ttl"), VOCAB).expect("vocabulary");
         std::fs::write(root.join("registry.json"), REGISTRY).expect("registry");
@@ -211,4 +224,14 @@ fn the_template_entry_describes_itself() {
         "the document's Source action is offered: {}",
         described.body
     );
+}
+
+#[test]
+fn two_servers_started_together_never_share_a_root() {
+    // Each server's `Drop` removes its root, so two that shared one would
+    // delete each other's registry mid-test. Two starts in one clock tick is
+    // the case: this loop is the tight version of two tests starting at once.
+    let roots: Vec<PathBuf> = (0..1000).map(|_| scratch_root()).collect();
+    let distinct: std::collections::HashSet<&PathBuf> = roots.iter().collect();
+    assert_eq!(distinct.len(), roots.len(), "scratch roots collided");
 }
