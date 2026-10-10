@@ -267,6 +267,14 @@ before it reaches a resource:
 /{ns}/{doc}    → urn:name:doc:{ns}/{doc}
 ```
 
+Each route serves two faces: Turtle by default, and the HTML documentation by
+`Accept: text/html` or `?as=text/html`. Any other type answers `406` naming
+those two, because this build binds no transreptor — a host that embeds the
+module beside one reaches more formats through `as=` in the kernel, but an HTTP
+face negotiates only over what the document *declares* (ledger #249 is the open
+question of whether it should consult the transreptor graph). `?description`
+answers the route's OpenAPI description.
+
 Administration is deliberately absent from it. The server holds a **read-only**
 capability jailed to `--root`, so `urn:name:claim` and `urn:name:admin` cannot be
 performed by this process however it is addressed — they belong on a local or

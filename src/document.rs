@@ -46,161 +46,227 @@ fn bare(media_type: &str) -> &str {
     media_type.split(';').next().unwrap_or(media_type).trim()
 }
 
-/// The document behind a namespace, in the representation asked for.
+/// The IRI template a host binds [`doc`] at: the trailing variable captures the
+/// rest of the IRI, slashes and all, so `urn:name:doc:resmud/core` carries the
+/// path `resmud/core` in its own identity.
+pub const DOC_TEMPLATE: &str = "urn:name:doc:{path}";
+
+/// Where an entry's `path` arrives from, which is a property of how it is
+/// BOUND rather than of what it does — hence two descriptions over one handler.
+#[derive(Clone, Copy)]
+enum PathFrom {
+    /// An exact IRI (`urn:name:document`): the path is a by-value argument.
+    Argument,
+    /// [`DOC_TEMPLATE`]: the path is the template's `{path}` binding.
+    Binding,
+}
+
+/// The document behind a namespace, in the representation asked for, at an
+/// exact IRI: the path is an argument (`path=resmud/core`, or piped content).
+///
+/// Bind it at `urn:name:document`, as [`crate::space`] does. For the IRI whose
+/// tail IS the path, bind [`doc`] at [`DOC_TEMPLATE`] instead.
 pub fn document() -> AsyncFnEndpoint {
-    AsyncFnEndpoint::new("document", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
-        Box::pin(async move {
-            // Three ways in, most specific first. The BINDING is what lets an
-            // IRI carry the path (`urn:name:doc:resmud/core` via a template
-            // whose trailing variable captures the remainder, slashes and all)
-            // — which is what makes an HTTP path map onto a resource identity
-            // rather than a query parameter.
-            let path = match inv.bindings.get("path") {
-                Some(bound) => bound.trim().to_string(),
-                None => inv
-                    .inline_str("path")
-                    .or_else(|_| inv.inline_str("content"))
-                    .map_err(|_| Error::MissingArgument("path".into()))?
-                    .trim()
-                    .to_string(),
-            };
-            let wanted = inv
-                .inline_str("as")
-                .map(|t| bare(t).to_string())
-                .unwrap_or_else(|_| CANONICAL.to_string());
+    AsyncFnEndpoint::new("document", negotiate).with_description(described(PathFrom::Argument))
+}
 
-            let registry = load(inv).await?;
-            let found = resolve_path(&registry, &path)?;
-            let prefix = found.prefix.clone();
-            let strategy = found.strategy.clone();
+/// The same negotiated document at [`DOC_TEMPLATE`], where the path is the
+/// template's `{path}` binding rather than an argument.
+///
+/// One handler, a second description, because one description cannot declare a
+/// name as both an argument and a binding (ledger #194). Bound at the template
+/// with [`document`]'s description, the manifold read `path` as an argument the
+/// IRI could not supply, so the entry was undrivable: `urn:kernel:actions`
+/// offered nothing for it and an HTTP face's `?description` answered 404 for
+/// the resolver's only public resource family.
+///
+/// ```
+/// use ikigai_core::{Endpoint, InputSource, Verb};
+///
+/// let described = ikigai_name::doc().describe();
+/// let source = described
+///     .action_specs()
+///     .into_iter()
+///     .find(|a| a.verb == Verb::Source)
+///     .expect("a Source action");
+/// let path = source.inputs.iter().find(|i| i.name == "path").expect("declares path");
+/// assert_eq!(path.source, InputSource::Binding);
+/// assert!(ikigai_name::DOC_TEMPLATE.ends_with("{path}"));
+/// ```
+pub fn doc() -> AsyncFnEndpoint {
+    AsyncFnEndpoint::new("doc", negotiate).with_description(described(PathFrom::Binding))
+}
 
-            let source = match &strategy {
-                Strategy::Hosted { source } => source.clone(),
-                Strategy::Mirror { origin } => origin.clone(),
-                // The owner serves this one. Reporting where is what lets the
-                // HTTP face answer with a redirect instead of guessing.
-                Strategy::Redirect { target } => {
-                    return Err(Error::Endpoint(format!(
-                        "name: {prefix:?} redirects to {target}"
-                    )))
-                }
-                Strategy::Retired { reason } => {
-                    return Err(Error::NotFound(format!(
-                        "name: {prefix:?} is retired: {reason}"
-                    )))
-                }
-            };
+/// The handler both entries share: one face, however the path arrived.
+fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
+    Box::pin(async move {
+        // Three ways in, most specific first. The BINDING is what lets an
+        // IRI carry the path (`urn:name:doc:resmud/core` via a template
+        // whose trailing variable captures the remainder, slashes and all)
+        // — which is what makes an HTTP path map onto a resource identity
+        // rather than a query parameter.
+        let path = match inv.bindings.get("path") {
+            Some(bound) => bound.trim().to_string(),
+            None => inv
+                .inline_str("path")
+                .or_else(|_| inv.inline_str("content"))
+                .map_err(|_| Error::MissingArgument("path".into()))?
+                .trim()
+                .to_string(),
+        };
+        let wanted = inv
+            .inline_str("as")
+            .map(|t| bare(t).to_string())
+            .unwrap_or_else(|_| CANONICAL.to_string());
 
-            // HTML is a different artifact, not a conversion of the graph: it is
-            // a page ABOUT the vocabulary, which is why it is rendered rather
-            // than transrepted.
-            if bare(&wanted) == HTML {
-                let iri = Iri::parse("urn:name:docs")
-                    .map_err(|e| Error::Endpoint(format!("name: {e}")))?;
-                let mut request = Request::new(Verb::Source, iri)
-                    .with_arg("prefix", ArgRef::Inline(prefix.into_bytes()));
-                if let Ok(theme) = inv.inline_str("theme") {
-                    request = request.with_arg("theme", ArgRef::Inline(theme.as_bytes().to_vec()));
-                }
-                return inv.issue(request).await;
-            }
+        let registry = load(inv).await?;
+        let found = resolve_path(&registry, &path)?;
+        let prefix = found.prefix.clone();
+        let strategy = found.strategy.clone();
 
-            let iri = Iri::parse(&source)
-                .map_err(|e| Error::Endpoint(format!("name: bad source {source:?}: {e}")))?;
-            let stored = inv.source(&iri).await?;
-
-            // The ceiling is checked on the way OUT, not on the way in: by the
-            // time it is here the bytes are already resident, so this bounds
-            // what leaves rather than what arrives. It is still worth having —
-            // a transreptor chain multiplies a large document several times
-            // over, and refusing early is what stops one namespace's mistake
-            // from being every request's problem.
-            let ceiling = registry.limits.max_document_bytes;
-            if stored.bytes.len() > ceiling {
+        let source = match &strategy {
+            Strategy::Hosted { source } => source.clone(),
+            Strategy::Mirror { origin } => origin.clone(),
+            // The owner serves this one. Reporting where is what lets the
+            // HTTP face answer with a redirect instead of guessing.
+            Strategy::Redirect { target } => {
                 return Err(Error::Endpoint(format!(
-                    "name: {path:?} is {} bytes, over this host's {ceiling}-byte ceiling \
+                    "name: {prefix:?} redirects to {target}"
+                )))
+            }
+            Strategy::Retired { reason } => {
+                return Err(Error::NotFound(format!(
+                    "name: {prefix:?} is retired: {reason}"
+                )))
+            }
+        };
+
+        // HTML is a different artifact, not a conversion of the graph: it is
+        // a page ABOUT the vocabulary, which is why it is rendered rather
+        // than transrepted.
+        if bare(&wanted) == HTML {
+            let iri =
+                Iri::parse("urn:name:docs").map_err(|e| Error::Endpoint(format!("name: {e}")))?;
+            let mut request = Request::new(Verb::Source, iri)
+                .with_arg("prefix", ArgRef::Inline(prefix.into_bytes()));
+            if let Ok(theme) = inv.inline_str("theme") {
+                request = request.with_arg("theme", ArgRef::Inline(theme.as_bytes().to_vec()));
+            }
+            return inv.issue(request).await;
+        }
+
+        let iri = Iri::parse(&source)
+            .map_err(|e| Error::Endpoint(format!("name: bad source {source:?}: {e}")))?;
+        let stored = inv.source(&iri).await?;
+
+        // The ceiling is checked on the way OUT, not on the way in: by the
+        // time it is here the bytes are already resident, so this bounds
+        // what leaves rather than what arrives. It is still worth having —
+        // a transreptor chain multiplies a large document several times
+        // over, and refusing early is what stops one namespace's mistake
+        // from being every request's problem.
+        let ceiling = registry.limits.max_document_bytes;
+        if stored.bytes.len() > ceiling {
+            return Err(Error::Endpoint(format!(
+                "name: {path:?} is {} bytes, over this host's {ceiling}-byte ceiling \
                      (raise limits.max_document_bytes in the registry)",
-                    stored.bytes.len()
-                )));
-            }
+                stored.bytes.len()
+            )));
+        }
 
-            let have = bare(&stored.repr_type.media_type).to_string();
+        let have = bare(&stored.repr_type.media_type).to_string();
 
-            if have == wanted {
-                return Ok(stored);
-            }
+        if have == wanted {
+            return Ok(stored);
+        }
 
-            let Some(plan) = inv.select_transreptor(&have, &wanted) else {
-                // Naming what IS reachable turns a dead end into a next step,
-                // and a namespace's whole job is being dereferenceable.
-                return Err(Error::Endpoint(format!(
-                    "name: nothing converts {have} to {wanted} (this host serves {have} \
+        let Some(plan) = inv.select_transreptor(&have, &wanted) else {
+            // Naming what IS reachable turns a dead end into a next step,
+            // and a namespace's whole job is being dereferenceable.
+            return Err(Error::Endpoint(format!(
+                "name: nothing converts {have} to {wanted} (this host serves {have} \
                      and {HTML}; bind a transreptor for {wanted} to add it)"
-                )));
-            };
+            )));
+        };
 
-            // Drive the chain exactly as the kernel drives its own: pipe
-            // `content`, set `as`, one step at a time.
-            let mut current = stored;
-            for step in plan {
-                let step_iri = Iri::parse(&step.endpoint).map_err(|e| {
-                    Error::Endpoint(format!("name: bad transreptor {}: {e}", step.endpoint))
-                })?;
-                current = inv
-                    .issue(
-                        Request::new(Verb::Source, step_iri)
-                            .with_arg("content", ArgRef::Inline(current.bytes))
-                            .with_arg("as", ArgRef::Inline(step.to.into_bytes())),
-                    )
-                    .await?;
-            }
-            Ok(current)
-        })
+        // Drive the chain exactly as the kernel drives its own: pipe
+        // `content`, set `as`, one step at a time.
+        let mut current = stored;
+        for step in plan {
+            let step_iri = Iri::parse(&step.endpoint).map_err(|e| {
+                Error::Endpoint(format!("name: bad transreptor {}: {e}", step.endpoint))
+            })?;
+            current = inv
+                .issue(
+                    Request::new(Verb::Source, step_iri)
+                        .with_arg("content", ArgRef::Inline(current.bytes))
+                        .with_arg("as", ArgRef::Inline(step.to.into_bytes())),
+                )
+                .await?;
+        }
+        Ok(current)
     })
-    .with_description(
-        Description::new("document")
-            .title("A namespace document, negotiated")
-            .summary(
-                "The document behind a curated path, in the representation asked for: Turtle \
+}
+
+/// The contract shared by [`document`] and [`doc`]; only where `path` comes
+/// from, and so the id, differ.
+fn described(from: PathFrom) -> Description {
+    let (id, path) = match from {
+        PathFrom::Argument => (
+            "document",
+            ArgSpec::new("path")
+                .summary("the curated path, e.g. resmud/core — a named argument or piped content"),
+        ),
+        PathFrom::Binding => (
+            "doc",
+            ArgSpec::new("path")
+                .summary(
+                    "the curated path, e.g. resmud/core — the rest of the IRI after \
+                     urn:name:doc:, slashes and all",
+                )
+                .binding(),
+        ),
+    };
+    Description::new(id)
+        .title("A namespace document, negotiated")
+        .summary(
+            "The document behind a curated path, in the representation asked for: Turtle \
                  as stored, HTML rendered as documentation, and anything else reached through \
                  a transreptor chain. One IRI for every representation — a term's identity is \
                  its IRI, and a per-format suffix would fork it.",
-            )
-            .action(
-                ActionSpec::new(Verb::Source)
-                    .summary("negotiate a namespace document")
-                    .input(
-                        ArgSpec::new("path")
-                            .summary(
-                                "the curated path, e.g. resmud/core — from a template \
-                                 binding, a named argument, or piped content",
-                            )
-                            .class(XSD_STRING),
-                    )
-                    .input(
-                        ArgSpec::new("as")
-                            .summary(
-                                "the representation wanted; defaults to text/turtle. \
+        )
+        .action(
+            ActionSpec::new(Verb::Source)
+                .summary("negotiate a namespace document")
+                .input(path.class(XSD_STRING))
+                .input(
+                    ArgSpec::new("as")
+                        .summary(
+                            "the representation wanted; defaults to text/turtle. \
                                  text/html renders the documentation face, and any other \
                                  type is reached through a transreptor if one is bound.",
-                            )
-                            .default_value(CANONICAL)
-                            .optional()
-                            .class(XSD_STRING),
-                    )
-                    .input(
-                        ArgSpec::new("theme")
-                            .summary("passed through to the HTML face")
-                            .optional()
-                            .class(XSD_STRING),
-                    )
-                    // The two faces produced HERE. Everything else is reached
-                    // through a transreptor the host may or may not bind, so it
-                    // is not this action's to declare (the `as` input says so).
-                    .output(CANONICAL)
-                    .output(TEXT_HTML_UTF8),
-            ),
-    )
+                        )
+                        .default_value(CANONICAL)
+                        .optional()
+                        .class(XSD_STRING),
+                )
+                .input(
+                    ArgSpec::new("theme")
+                        .summary("passed through to the HTML face")
+                        .optional()
+                        .class(XSD_STRING),
+                )
+                // The two faces produced HERE. Everything else is reached
+                // through a transreptor the host may or may not bind, so it
+                // is not this action's to declare (the `as` input says so).
+                // ⚠ An HTTP face negotiates over these two ALONE (ikigai-web
+                // from 0.1.22): a transreptor a host binds is reachable through
+                // `as=` in the kernel but answers 406 over HTTP. Whether the
+                // adapter should consult the transreptor graph is ledger #249;
+                // the standalone server binds none, so for it 406 is the truth.
+                .output(CANONICAL)
+                .output(TEXT_HTML_UTF8),
+        )
 }
 
 #[cfg(test)]

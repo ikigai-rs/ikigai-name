@@ -109,8 +109,10 @@ const READ_FACES: [&str; 5] = [REGISTRY, RESOLVE, DOCS, DOCUMENT, HEALTH];
 const VOCAB_IRI: &str = "urn:conformance:vocab";
 const SPARQL_IRI: &str = "urn:sparql:select";
 
-/// The template the standalone server binds `document` at, beside the exact IRI.
-const DOC_TEMPLATE: &str = "urn:name:doc:{path}";
+/// The template the standalone server binds `doc` at, beside the exact IRI.
+use ikigai_name::DOC_TEMPLATE;
+/// The id of the entry bound there: `document`'s handler, its own description.
+const DOC: &str = "doc";
 
 /// Two namespaces: one hosted (what the read faces resolve) and one redirect
 /// (what `admin`'s probes rewrite, so the hosted one is untouched by the walk).
@@ -297,7 +299,7 @@ impl World {
 }
 
 /// `threaded` selects the store's kind (see the file docs); `template` also
-/// binds `document` at the server's `urn:name:doc:{path}`; `engine` binds
+/// binds `doc` at the server's `urn:name:doc:{path}`; `engine` binds
 /// `ikigai-sparql` in place of the stand-in.
 fn world_with(threaded: bool, template: bool, engine: bool) -> World {
     let registry = Arc::new(RwLock::new(REGISTRY_JSON.to_string()));
@@ -310,7 +312,7 @@ fn world_with(threaded: bool, template: bool, engine: bool) -> World {
     if template {
         space = space.bind(
             UriTemplate::parse(DOC_TEMPLATE).expect("a valid template"),
-            ikigai_name::document(),
+            ikigai_name::doc(),
         );
     }
     let space = space
@@ -1351,34 +1353,29 @@ fn errors_carry_no_registry_body() {
     }
 }
 
-/// The server binds `document` at `urn:name:doc:{path}` beside the exact IRI,
-/// and `document` reads `path` from the binding first. The description declares
-/// `path` BY VALUE (it must — the exact binding takes it as an argument), so the
-/// template entry draws exactly one ARGSPECS finding: the manifold cannot form
-/// the templated IRI from the contract. One description cannot declare a name
-/// as both argument and binding; recorded for the hub rather than routed around.
+/// The server binds `doc` at `urn:name:doc:{path}` beside the exact IRI. It is
+/// `document`'s handler under a second description that declares `path` as the
+/// template's BINDING — `document` must declare it BY VALUE, because the exact
+/// IRI takes it as an argument, and one description cannot declare a name as
+/// both. Until `doc` existed the server bound `document` here, the template
+/// entry drew an ARGSPECS finding ("the manifold cannot form the IRI from the
+/// contract, so the action is undrivable"), and this test pinned that finding
+/// (ledger #194). Now the walk is clean.
+///
+/// ⚠ The binding fixture lives HERE, not in `suite()`: it is meaningful only in
+/// the world that binds the template. In every other world nothing is bound at
+/// `urn:name:doc:{path}`, and DECLARATIONS would rightly report a `doc` fixture
+/// as inert. Keep the two worlds' fixtures separate.
 #[test]
 fn bound_at_the_servers_template() {
     let w = world_with(true, true, false);
-    // The binding lives HERE, not in `suite()`: it is meaningful only in the
-    // world that binds the template, and conformance 0.2.0's DECLARATIONS check
-    // reports it as inert anywhere else. `target_for` scans every fixture of the
-    // id for the variable, and `args_for` takes the FIRST matching id+verb, so a
-    // binding-only fixture after the argument-carrying one drives the template
-    // entry without disturbing the exact one.
     let suite = declared(stand_in_suite())
-        .fixture(Fixture::new(DOCUMENT, Verb::Source).binding("path", "resmud/core"));
+        .cacheable(DOC)
+        .fixture(Fixture::new(DOC, Verb::Source).binding("path", "resmud/core"));
     let report = suite.run_blocking(&w.kernel);
-    eprintln!("[threaded registry, document also bound at {DOC_TEMPLATE}]\n{report}");
-    assert_eq!(report.findings.len(), 1, "{report}");
-    let finding = &report.findings[0];
-    assert_eq!(finding.check, Check::ArgSpecs, "{report}");
-    assert_eq!(finding.endpoint, DOCUMENT, "{report}");
-    assert!(
-        finding.detail.contains("template variable `path`"),
-        "{finding}"
-    );
-    // The entry itself works: the binding carries the path, as the server relies on.
+    eprintln!("[threaded registry, doc also bound at {DOC_TEMPLATE}]\n{report}");
+    assert!(report.is_clean(), "{report}");
+    // The entry works: the binding carries the path, as the server relies on.
     let repr = issue(
         &w.kernel,
         request(Verb::Source, "urn:name:doc:resmud/core", &[]),
@@ -1386,9 +1383,21 @@ fn bound_at_the_servers_template() {
     )
     .unwrap();
     assert!(text(&repr).contains("rm:Weapon"));
+    // And the manifold offers it, which is what was missing: the row names the
+    // template, under the id `doc`, with `path` as a binding.
+    let offered = w.kernel.select_actions(&ikigai_core::ActionQuery {
+        capability: Some(&Capability::root()),
+        ..Default::default()
+    });
+    assert!(
+        offered
+            .iter()
+            .any(|m| m.id == DOC && m.endpoint == DOC_TEMPLATE && m.verb == Verb::Source),
+        "the template entry is offered: {offered:?}"
+    );
     assert_eq!(
-        report.endpoints, 10,
-        "one description, two entries: {report}"
+        report.endpoints, 11,
+        "the exact entry, the template entry, the rest: {report}"
     );
     assert_eq!(report.actions, 13, "{report}");
 }

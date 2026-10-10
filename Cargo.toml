@@ -37,7 +37,13 @@ serde_json = "1"
 ikigai-a11y = "0.2.0"
 
 # Server-only. `ikigai-web` is the inbound HTTP transport (method↔verb,
-# Accept↔conneg, and a strong ETag with If-None-Match already handled);
+# Accept↔conneg, and a strong ETag with If-None-Match already handled). Its
+# version is a floor on the server's PUBLIC BEHAVIOR, not its API: the code
+# compiles unchanged against the old floor, 0.1.16, which served the same routes
+# differently — `?as=` ignored, an unservable `Accept` answered 500 rather than
+# 406, `?description` 404 — with no compile error to say so (ledger #196). 0.1.43
+# is the version `tests/server_http.rs` verifies. A caret on 0.x is a ceiling
+# too: this admits <0.2.0, so re-read it as a range.
 # `ikigai-fs` gives golden-threaded urn:file:* so a registry edit invalidates
 # rather than needing a restart; `ikigai-sparql` is what the docs face queries
 # through — 0.1.8, not the 0.1.6 the code compiles against, because below it the
@@ -45,7 +51,7 @@ ikigai-a11y = "0.2.0"
 # `application/sparql-results+json`, and `ikigai-web`'s Accept-conneg answers
 # from the DECLARED outputs: the server would announce a manifold it does not
 # serve. The floor is a contract the binary depends on, not just an API.
-ikigai-web = { version = "0.1.16", optional = true }
+ikigai-web = { version = "0.1.43", optional = true }
 ikigai-fs = { version = "0.1.8", optional = true } # security floor (audit round 3, ledger #856)
 ikigai-sparql = { version = "0.1.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
@@ -61,6 +67,13 @@ server = ["dep:ikigai-web", "dep:ikigai-sparql", "dep:ikigai-fs", "dep:tokio"]
 [[bin]]
 name = "ikigai-name-server"
 path = "src/bin/server.rs"
+required-features = ["server"]
+
+# Spawns the server binary, so it needs the same feature; CI's `features: "*"`
+# enables it (a `required-features` target is otherwise silently skipped).
+[[test]]
+name = "server_http"
+path = "tests/server_http.rs"
 required-features = ["server"]
 
 [dev-dependencies]
