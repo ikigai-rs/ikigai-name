@@ -37,10 +37,11 @@
 //! The docs face queries `urn:sparql:select` through the kernel. [`conforms`]
 //! binds a stand-in that answers a canned result set after resolving `graph=`
 //! (so the vocabulary's thread propagates); [`conforms_over_the_real_engine`]
-//! walks the same suite with `ikigai-sparql` bound and holds BOTH sides clean —
-//! 0.1.8 typed its inputs and declared the RDF media types its graph faces
-//! actually serve, so the cross-module walk is a real end-to-end conformance
-//! assertion rather than a recording of someone else's residue.
+//! walks the same suite with `ikigai-sparql` bound. 0.1.8 typed its inputs and
+//! declared the RDF media types its graph faces actually serve, so the walk was
+//! clean on both sides through conformance 0.6; 0.8.0's REQUIRED finds the
+//! engine refusing a missing `query` untyped, and that test records the four
+//! findings exactly (this module's side stays clean).
 //!
 //! ## What the suite cannot see, pinned by hand
 //!
@@ -1157,6 +1158,64 @@ fn required_inputs_are_required() {
     );
 }
 
+/// conformance 0.8.0's REQUIRED over the mutating verbs too
+/// (`Suite::required_on_mutating`), safe here because the registry is a fixture
+/// store and every firing is read back from its write log. The walk drops each
+/// required by-value input from the pipeline probe's call: `strategy` from
+/// `claim`'s and `admin`'s Sinks is refused typed (no finding), and that half is
+/// real coverage the default walk does not give.
+///
+/// `prefix` is the half the suite cannot see. Its alternative is piped
+/// `content` (the engine routes a Sink's or Delete's pipe into `content`, by
+/// name), and the probe's call carries the walk's `content=x`, so dropping
+/// `prefix` leaves the fallback and the call rightly succeeds on prefix `x`.
+/// `ArgSpec` cannot spell "exactly one of `prefix` or `content`" (core PENDING
+/// §29), and marking `prefix` optional would leave the contract stating no
+/// intake at all. [`required_inputs_are_required`] pins the real rule: neither
+/// given is a typed `MissingArgument`, with no write. So the three `prefix`
+/// findings (claim sink, admin sink, admin delete) are recorded exactly here,
+/// not waived: an `opt_out_check` would drop REQUIRED for `strategy` too, since
+/// opt-outs are per check, not per input. Kept out of [`conforms`], whose write
+/// log pins the default walk's three firings.
+#[test]
+fn required_on_the_mutating_verbs() {
+    let w = world(true);
+    let report = declared(stand_in_suite())
+        .required_on_mutating()
+        .run_blocking(&w.kernel);
+    eprintln!("[threaded registry, REQUIRED on Sink and Delete]\n{report}");
+    assert!(report.declared.required_on_mutating, "{report}");
+    let found: Vec<(&str, Option<Verb>, Check)> = report
+        .findings
+        .iter()
+        .map(|f| (f.endpoint.as_str(), f.verb, f.check))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (CLAIM, Some(Verb::Sink), Check::Required),
+            (ADMIN, Some(Verb::Sink), Check::Required),
+            (ADMIN, Some(Verb::Delete), Check::Required),
+        ],
+        "only `prefix`, whose piped `content` fallback the suite cannot see: {report}"
+    );
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|f| f.detail.contains("declares `prefix` required")),
+        "{report}"
+    );
+    // The fallback is what landed: the drop claimed the walk's piped `x`.
+    assert_eq!(
+        w.stored().lookup("x").map(|ns| &ns.strategy),
+        Some(&Strategy::Retired {
+            reason: "withdrawn".into()
+        }),
+        "claimed from `content=x`, then rewritten and retired by admin's drops"
+    );
+}
+
 /// Denied before anything is read or written. ENFORCED sees a typed `Denied`
 /// under no grants — the KERNEL's floor on `urn:cap:name:claim` and on the
 /// wildcard `urn:cap:name:admin:*` (PENDING #46). Pinned here beyond that: the
@@ -1410,9 +1469,22 @@ fn bound_at_the_servers_template() {
 /// `application/sparql-results+json`); 0.1.8 fixed both, and the graph faces now
 /// declare all six RDF media types, so the walk probes each one.
 ///
-/// Asserting `is_clean()` rather than filtering to the engine's findings is
-/// deliberate: a loop over a residue that is now empty asserts nothing, and
-/// would take a fresh ARGSPECS regression in either crate without a word.
+/// conformance 0.8.0's REQUIRED found a residue again, and it is the ENGINE's,
+/// not this module's: each of the four forms declares `query` required and,
+/// called without it, refuses as `Error::Endpoint("urn:sparql:* needs a
+/// `query=<sparql>` argument")` rather than a typed `MissingArgument`, so an
+/// agent cannot tell its own omission from a failure of the endpoint. That is
+/// `ikigai-sparql` through 0.2.4 (`crates/ikigai-sparql/src/lib.rs` in
+/// ikigai-linkeddata), and the fix belongs there. This module's endpoints are
+/// clean under REQUIRED in every world.
+///
+/// So the residue is RECORDED, exactly, not waived: the report must hold those
+/// four findings and nothing else. Comparing the whole finding set (rather than
+/// filtering the engine's out, or an `opt_out_check` per form) is deliberate:
+/// a filter over a residue asserts nothing about the rest, and would take a
+/// fresh regression in either crate without a word. When the dev-dependency
+/// carries the fix, this assertion fails, and the right edit is back to
+/// `is_clean()`.
 #[test]
 fn conforms_over_the_real_engine() {
     let w = world_with(true, false, true);
@@ -1435,7 +1507,24 @@ fn conforms_over_the_real_engine() {
     });
     let report = suite.run_blocking(&w.kernel);
     eprintln!("[threaded registry, real ikigai-sparql]\n{report}");
-    assert!(report.is_clean(), "{report}");
+    let found: Vec<(&str, Option<Verb>, Check)> = report
+        .findings
+        .iter()
+        .map(|f| (f.endpoint.as_str(), f.verb, f.check))
+        .collect();
+    let engine_residue: Vec<(&str, Option<Verb>, Check)> = forms
+        .iter()
+        .map(|(id, _)| (*id, Some(Verb::Source), Check::Required))
+        .collect();
+    assert_eq!(
+        found, engine_residue,
+        "exactly ikigai-sparql's untyped `query` refusal, nothing else: {report}"
+    );
+    assert!(
+        report.findings.iter().all(|f| f.detail.contains("`query`")
+            && f.detail.contains("not as a typed `MissingArgument`")),
+        "{report}"
+    );
     assert_eq!(
         report.endpoints, 13,
         "seven, two fixtures, four forms: {report}"
