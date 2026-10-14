@@ -42,18 +42,22 @@ ikigai-a11y = "0.2.0"
 # compiles unchanged against the old floor, 0.1.16, which served the same routes
 # differently — `?as=` ignored, an unservable `Accept` answered 500 rather than
 # 406, `?description` 404 — with no compile error to say so (ledger #196). 0.1.43
-# is the version `tests/server_http.rs` verifies. A caret on 0.x is a ceiling
+# is the floor `tests/server_http.rs` was written against; the lock holds
+# 0.1.63 (ledger #1515), which it passes unchanged. A caret on 0.x is a ceiling
 # too: this admits <0.2.0, so re-read it as a range.
 # `ikigai-fs` gives golden-threaded urn:file:* so a registry edit invalidates
 # rather than needing a restart; `ikigai-sparql` is what the docs face queries
-# through — 0.1.8, not the 0.1.6 the code compiles against, because below it the
-# graph faces serve `text/turtle` while declaring only
-# `application/sparql-results+json`, and `ikigai-web`'s Accept-conneg answers
-# from the DECLARED outputs: the server would announce a manifold it does not
-# serve. The floor is a contract the binary depends on, not just an API.
+# through. Its floor has always been a contract the binary depends on, not just
+# an API: 0.1.8 because below it the graph faces serve `text/turtle` while
+# declaring only `application/sparql-results+json`, and `ikigai-web`'s
+# Accept-conneg answers from the DECLARED outputs, so the server would announce
+# a manifold it does not serve. 0.2.5 because below it a call missing `query`
+# is refused untyped, which `tests/conformance.rs` now holds clean (ledger
+# #1515). A 0.x caret is a ceiling too: `"0.2.5"` is `<0.3.0`; the old
+# `"0.1.8"` had frozen this crate out of the whole 0.2 line.
 ikigai-web = { version = "0.1.43", optional = true }
 ikigai-fs = { version = "0.1.8", optional = true } # security floor (audit round 3, ledger #856)
-ikigai-sparql = { version = "0.1.8", optional = true }
+ikigai-sparql = { version = "0.2.5", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 
 # --- the standalone server ---------------------------------------------------
@@ -85,4 +89,7 @@ futures = "0.3"
 ikigai-conformance = "0.8.0"
 # The real SPARQL engine, so the docs face's term extraction is proved through a
 # genuine module boundary rather than a hand-written stub of the results format.
-ikigai-sparql = "0.1.8"
+# 0.2.5 for its typed `MissingArgument` on a missing `query`: the real-engine
+# conformance walk asserts it clean, and below 0.2.5 it draws four REQUIRED
+# findings. Kept equal to the server's pin above.
+ikigai-sparql = "0.2.5"

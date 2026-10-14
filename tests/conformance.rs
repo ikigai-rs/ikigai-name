@@ -39,9 +39,9 @@
 //! (so the vocabulary's thread propagates); [`conforms_over_the_real_engine`]
 //! walks the same suite with `ikigai-sparql` bound. 0.1.8 typed its inputs and
 //! declared the RDF media types its graph faces actually serve, so the walk was
-//! clean on both sides through conformance 0.6; 0.8.0's REQUIRED finds the
-//! engine refusing a missing `query` untyped, and that test records the four
-//! findings exactly (this module's side stays clean).
+//! clean on both sides through conformance 0.6; 0.8.0's REQUIRED found the
+//! engine refusing a missing `query` untyped, and 0.2.5 refuses it typed, so
+//! the walk is clean on both sides again.
 //!
 //! ## What the suite cannot see, pinned by hand
 //!
@@ -1469,22 +1469,15 @@ fn bound_at_the_servers_template() {
 /// `application/sparql-results+json`); 0.1.8 fixed both, and the graph faces now
 /// declare all six RDF media types, so the walk probes each one.
 ///
-/// conformance 0.8.0's REQUIRED found a residue again, and it is the ENGINE's,
+/// conformance 0.8.0's REQUIRED found a residue again, and it was the ENGINE's,
 /// not this module's: each of the four forms declares `query` required and,
-/// called without it, refuses as `Error::Endpoint("urn:sparql:* needs a
+/// called without it, refused as `Error::Endpoint("urn:sparql:* needs a
 /// `query=<sparql>` argument")` rather than a typed `MissingArgument`, so an
-/// agent cannot tell its own omission from a failure of the endpoint. That is
-/// `ikigai-sparql` through 0.2.4 (`crates/ikigai-sparql/src/lib.rs` in
-/// ikigai-linkeddata), and the fix belongs there. This module's endpoints are
-/// clean under REQUIRED in every world.
-///
-/// So the residue is RECORDED, exactly, not waived: the report must hold those
-/// four findings and nothing else. Comparing the whole finding set (rather than
-/// filtering the engine's out, or an `opt_out_check` per form) is deliberate:
-/// a filter over a residue asserts nothing about the rest, and would take a
-/// fresh regression in either crate without a word. When the dev-dependency
-/// carries the fix, this assertion fails, and the right edit is back to
-/// `is_clean()`.
+/// agent could not tell its own omission from a failure of the endpoint. That
+/// was `ikigai-sparql` through 0.2.4; 0.2.5 refuses it typed, and with the
+/// dev-dependency on 0.2.5 (ledger #1515) the walk is clean outright again.
+/// This test recorded those four findings exactly until then, rather than
+/// waiving them, so the fix arriving is what turned it back to `is_clean()`.
 #[test]
 fn conforms_over_the_real_engine() {
     let w = world_with(true, false, true);
@@ -1507,24 +1500,7 @@ fn conforms_over_the_real_engine() {
     });
     let report = suite.run_blocking(&w.kernel);
     eprintln!("[threaded registry, real ikigai-sparql]\n{report}");
-    let found: Vec<(&str, Option<Verb>, Check)> = report
-        .findings
-        .iter()
-        .map(|f| (f.endpoint.as_str(), f.verb, f.check))
-        .collect();
-    let engine_residue: Vec<(&str, Option<Verb>, Check)> = forms
-        .iter()
-        .map(|(id, _)| (*id, Some(Verb::Source), Check::Required))
-        .collect();
-    assert_eq!(
-        found, engine_residue,
-        "exactly ikigai-sparql's untyped `query` refusal, nothing else: {report}"
-    );
-    assert!(
-        report.findings.iter().all(|f| f.detail.contains("`query`")
-            && f.detail.contains("not as a typed `MissingArgument`")),
-        "{report}"
-    );
+    assert!(report.is_clean(), "{report}");
     assert_eq!(
         report.endpoints, 13,
         "seven, two fixtures, four forms: {report}"
