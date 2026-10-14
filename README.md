@@ -300,8 +300,9 @@ authenticated transport.
 resolution, capability-scoped administration, the HTML documentation face, content
 negotiation, limits and cacheability.
 
-**Not on crates.io**, so depend on it by git rather than by version. Running the
-`server` feature needs a directory holding `registry.json` and the documents it
+**On crates.io** as `ikigai-name` (0.2.x): `cargo add ikigai-name` to embed it,
+or `cargo install --locked ikigai-name --features server` for the standalone
+`ikigai-name-server` binary. Running the `server` feature needs a directory holding `registry.json` and the documents it
 points at; embedded, a host binds `ikigai_name::space()` and nothing else.
 
 **Not built**, and a permanence promise is weaker without them: as-of resolution

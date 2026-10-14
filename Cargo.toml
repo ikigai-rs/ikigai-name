@@ -79,9 +79,10 @@ required-features = ["server"]
 [dev-dependencies]
 futures = "0.3"
 # The module recipe as one test: `tests/conformance.rs` walks every endpoint
-# `space()` binds and reports every violation at once. 0.6.0 for SPACE-NAME,
-# which holds `space()` to the name it claims.
-ikigai-conformance = "0.6.0"
+# `space()` binds and reports every violation at once. 0.8.0 for REQUIRED
+# (each required input dropped must be refused, typed) on top of 0.7's VALIDATE
+# and 0.6's SPACE-NAME. A 0.x caret is a ceiling too: `"0.8.0"` is `<0.9.0`.
+ikigai-conformance = "0.8.0"
 # The real SPARQL engine, so the docs face's term extraction is proved through a
 # genuine module boundary rather than a hand-written stub of the results format.
 ikigai-sparql = "0.1.8"
