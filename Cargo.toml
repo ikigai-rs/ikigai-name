@@ -2,6 +2,12 @@
 name = "ikigai-name"
 version = "0.2.1"
 edition = "2021"
+# Measured 2026-10-14 (ledger #195), not guessed: on 1.87, clippy -D warnings and the
+# tests pass with and without `server`; on 1.86 the library itself fails (ikigai-core
+# 0.1.103 calls `is_multiple_of`, stable in 1.87) and the dev and server graphs are
+# refused outright (oxrdf, spargebra and the rest of oxigraph 0.5 declare 1.87).
+# Declaring it is what makes the shared CI's msrv job run rather than skip.
+rust-version = "1.87"
 license = "MIT OR Apache-2.0"
 description = "Persistent-identifier resolution as an ikigai module: urn:name:* resolves curated IRIs against an externalized, capability-scoped registry — hosted, redirected or mirrored — so a namespace outlives the domain that first served it."
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
