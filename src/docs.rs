@@ -30,6 +30,7 @@ use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation, InvokeFuture,
     Iri, ReprType, Representation, Request, Result, Verb,
 };
+use ikigai_fn::html::{attr, html_text, url_segment};
 
 const TEXT_HTML: &str = "text/html;charset=utf-8";
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
@@ -299,25 +300,16 @@ async fn terms_of(inv: &Invocation<'_>, graph: &str) -> Result<Vec<Term>> {
 
 // --- rendering --------------------------------------------------------------
 
-/// Escape text for HTML. Vocabulary comments are operator-supplied and may
-/// contain anything.
-fn esc(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
-
 /// One term's detail — the htmx fragment.
 fn detail_html(term: &Term) -> String {
     let mut out = format!(
         "<div class=\"detail\" id=\"detail\" tabindex=\"-1\" aria-live=\"polite\">\
          <h2>{}</h2><p class=\"iri\">{}</p>",
-        esc(&term.local),
-        esc(&term.iri)
+        html_text(&term.local),
+        html_text(&term.iri)
     );
     if let Some(comment) = &term.comment {
-        out.push_str(&format!("<p>{}</p>", esc(comment)));
+        out.push_str(&format!("<p>{}</p>", html_text(comment)));
     }
     let mut rows = String::new();
     for (label, value) in [
@@ -328,7 +320,7 @@ fn detail_html(term: &Term) -> String {
         if let Some(value) = value {
             rows.push_str(&format!(
                 "<tr><th scope=\"row\">{label}</th><td><code>{}</code></td></tr>",
-                esc(&local_name(value))
+                html_text(&local_name(value))
             ));
         }
     }
@@ -350,7 +342,7 @@ fn chooser_html(prefix: &str, theme: &str) -> String {
                 "<option value=\"{}\"{}>{}</option>",
                 p.name,
                 if p.name == theme { " selected" } else { "" },
-                esc(p.label)
+                html_text(p.label)
             )
         })
         .collect::<String>();
@@ -363,7 +355,7 @@ fn chooser_html(prefix: &str, theme: &str) -> String {
          <select id=\"theme\" name=\"theme\">\
          <option value=\"auto\"{auto_selected}>Match system</option>{options}</select>\
          <noscript><button type=\"submit\">Apply</button></noscript></form>",
-        esc(prefix)
+        attr(prefix)
     )
 }
 
@@ -377,14 +369,14 @@ fn page_html(prefix: &str, theme: &str, source: &str, terms: &[Term]) -> String 
                  hx-get=\"/r/urn:name:docs?prefix={}&amp;term={}\" \
                  hx-target=\"#detail\" hx-swap=\"outerHTML\">\
                  <strong>{}</strong>{}</button></li>",
-                esc(prefix),
-                esc(&t.local),
-                esc(&t.local),
+                url_segment(prefix),
+                url_segment(&t.local),
+                html_text(&t.local),
                 t.comment
                     .as_deref()
                     .map(|c| format!(
                         "<br><span class=\"muted\">{}</span>",
-                        esc(c.chars().take(80).collect::<String>().trim())
+                        html_text(c.chars().take(80).collect::<String>().trim())
                     ))
                     .unwrap_or_default()
             )
@@ -406,9 +398,9 @@ fn page_html(prefix: &str, theme: &str, source: &str, terms: &[Term]) -> String 
         stylesheet(theme),
         terms.len(),
         if terms.len() == 1 { "" } else { "s" },
-        esc(source),
+        html_text(source),
         chooser_html(prefix, theme),
-        prefix = esc(prefix),
+        prefix = html_text(prefix),
     )
 }
 
@@ -689,5 +681,32 @@ mod tests {
     fn local_names_come_off_either_separator() {
         assert_eq!(local_name("https://x/ns#Weapon"), "Weapon");
         assert_eq!(local_name("https://x/ns/Weapon"), "Weapon");
+    }
+
+    /// A name with `'`, `"` and `<` is escaped in an attribute and in text.
+    #[test]
+    fn hostile_names_are_escaped_in_attributes_and_text() {
+        let name = "a'b\"c<d";
+        let term = Term {
+            iri: format!("https://x/ns#{name}"),
+            local: name.to_string(),
+            comment: Some(name.to_string()),
+            parent: None,
+            domain: None,
+            range: None,
+        };
+        let page = page_html(name, "auto", name, std::slice::from_ref(&term));
+        let detail = detail_html(&term);
+        for html in [&page, &detail] {
+            assert!(!html.contains("a'b"), "raw ' leaked: {html}");
+            assert!(!html.contains("c<d"), "raw < leaked: {html}");
+            assert!(
+                html.contains("a&#39;b&quot;c&lt;d"),
+                "text not escaped: {html}"
+            );
+        }
+        // attribute: the hidden input value; the URL query is percent-encoded
+        assert!(page.contains("value=\"a&#39;b&quot;c&lt;d\""));
+        assert!(!page.contains("prefix=a'b"));
     }
 }
