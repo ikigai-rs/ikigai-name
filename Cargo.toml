@@ -32,6 +32,7 @@ categories = ["web-programming", "data-structures"]
 # was the minimum: `AsyncFnEndpoint` lets a resolve read its registry back
 # THROUGH the kernel rather than off the filesystem.
 ikigai-core = "0.1.89"
+ikigai-fn = "0.5.0"
 async-trait = "0.1"
 # The registry is data the operator edits, so it is parsed, not compiled in.
 # JSON matches the house configuration format (edge-routes.json, clients.json).
