@@ -294,6 +294,14 @@ authenticated transport.
   and operator-driven; the fix is a validity-token precondition on the Sink, not
   a lock.
 
+## 0.3.0 migration
+
+This release moves the public core types to the 0.2 streams release (ledger
+#2261), so consumers must upgrade their other ikigai modules to core 0.2 as
+well. The old 0.1 caret requirement excluded 0.2 under Cargo's 0.x rules.
+The standalone server and conformance suite use the matching ecosystem releases;
+conformance now checks DATATYPES and FAILURES by default.
+
 ## Status
 
 **Built and walked clean by `ikigai-conformance`:** the registry, the claim rule,
