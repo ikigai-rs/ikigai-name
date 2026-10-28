@@ -131,6 +131,7 @@ fn routes() -> RouteTable {
     let route = |pattern: &str, iri: &str| Route {
         pattern: pattern.to_string(),
         iri_template: iri.to_string(),
+        redirect: None,
         cap: None,
         cors: None,
         csp: None,

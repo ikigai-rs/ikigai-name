@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-name"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 # Measured 2026-10-14 (ledger #195), not guessed: on 1.87, clippy -D warnings and the
 # tests pass with and without `server`; on 1.86 the library itself fails (ikigai-core
@@ -18,21 +18,10 @@ keywords = ["ikigai", "roc", "iri", "purl", "rdf"]
 categories = ["web-programming", "data-structures"]
 
 [dependencies]
-# The released kernel, consumed from crates.io — the SAME version the hosts use,
-# so a host links exactly one `ikigai-core` (no duplicate-crate type mismatch).
-# 0.1.89 is the floor for `space_iri` and for `bind` dropping a space's name,
-# which is what lets `space()` claim `urn:iki:space:name` (ledger #987) without
-# a host's extension carrying that claim over different doors.
-# Before it, 0.1.86 was the floor for a CONTRACT, not an API: from 0.1.86 core treats
-# `urn:cap:<family>:<qualifier>:-<rule>` as an EXCLUSION (`is_deny_scope`) that
-# `allows()` never grants, so `urn:cap:name:admin:<prefix>` reserves a prefix
-# beginning with `-`. This crate refuses such a prefix (and a deny-shaped
-# `owner`) with that rule, and below 0.1.86 the refusal would guard against
-# nothing and `is_deny_scope` would not exist (ledger #874). Before it, 0.1.54
-# was the minimum: `AsyncFnEndpoint` lets a resolve read its registry back
-# THROUGH the kernel rather than off the filesystem.
-ikigai-core = "0.1.89"
-ikigai-fn = "0.5.0"
+# 0.2.0 is the streams release (ledger #2261). The old 0.1 pin meant
+# <0.2.0 under 0.x caret rules; this floor admits compatible 0.2.x patches.
+ikigai-core = "0.2.0"
+ikigai-fn = "0.7.0"
 async-trait = "0.1"
 # The registry is data the operator edits, so it is parsed, not compiled in.
 # JSON matches the house configuration format (edge-routes.json, clients.json).
@@ -41,30 +30,13 @@ serde_json = "1"
 # The contrast floor. Used for its color maths, so the documentation palettes
 # are CHECKED rather than asserted — a page a newcomer must read is the wrong
 # place to discover that "muted" meant "illegible".
-ikigai-a11y = "0.2.0"
+ikigai-a11y = "0.4.0"
 
-# Server-only. `ikigai-web` is the inbound HTTP transport (method↔verb,
-# Accept↔conneg, and a strong ETag with If-None-Match already handled). Its
-# version is a floor on the server's PUBLIC BEHAVIOR, not its API: the code
-# compiles unchanged against the old floor, 0.1.16, which served the same routes
-# differently — `?as=` ignored, an unservable `Accept` answered 500 rather than
-# 406, `?description` 404 — with no compile error to say so (ledger #196). 0.1.43
-# is the floor `tests/server_http.rs` was written against; the lock holds
-# 0.1.63 (ledger #1515), which it passes unchanged. A caret on 0.x is a ceiling
-# too: this admits <0.2.0, so re-read it as a range.
-# `ikigai-fs` gives golden-threaded urn:file:* so a registry edit invalidates
-# rather than needing a restart; `ikigai-sparql` is what the docs face queries
-# through. Its floor has always been a contract the binary depends on, not just
-# an API: 0.1.8 because below it the graph faces serve `text/turtle` while
-# declaring only `application/sparql-results+json`, and `ikigai-web`'s
-# Accept-conneg answers from the DECLARED outputs, so the server would announce
-# a manifold it does not serve. 0.2.5 because below it a call missing `query`
-# is refused untyped, which `tests/conformance.rs` now holds clean (ledger
-# #1515). A 0.x caret is a ceiling too: `"0.2.5"` is `<0.3.0`; the old
-# `"0.1.8"` had frozen this crate out of the whole 0.2 line.
-ikigai-web = { version = "0.1.43", optional = true }
-ikigai-fs = { version = "0.1.8", optional = true } # security floor (audit round 3, ledger #856)
-ikigai-sparql = { version = "0.2.5", optional = true }
+# Server-only transports and stores, released against the streams core.
+# SPARQL retains the typed missing-query refusal tested by conformance.
+ikigai-web = { version = "0.2.0", optional = true }
+ikigai-fs = { version = "0.2.2", optional = true }
+ikigai-sparql = { version = "0.3.1", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
 
 # --- the standalone server ---------------------------------------------------
@@ -89,18 +61,7 @@ required-features = ["server"]
 
 [dev-dependencies]
 futures = "0.3"
-# The module recipe as one test: `tests/conformance.rs` walks every endpoint
-# `space()` binds and reports every violation at once. 0.8.0 for REQUIRED
-# (each required input dropped must be refused, typed) on top of 0.7's VALIDATE
-# and 0.6's SPACE-NAME. 0.9.0 adds core 0.1.105's contract-shape checks (REQUIRED
-# probes input groups, OUTPUTS honors output_from, PIPELINE's named-only line,
-# VALIDATE refuses a default on a binding) and RECOMPUTE; 0.10.0 adds FAILURES,
-# which stays OFF until a suite opts in. A 0.x caret is a ceiling too:
-# `"0.10.0"` is `<0.11.0`.
-ikigai-conformance = "0.10.0"
-# The real SPARQL engine, so the docs face's term extraction is proved through a
-# genuine module boundary rather than a hand-written stub of the results format.
-# 0.2.5 for its typed `MissingArgument` on a missing `query`: the real-engine
-# conformance walk asserts it clean, and below 0.2.5 it draws four REQUIRED
-# findings. Kept equal to the server's pin above.
-ikigai-sparql = "0.2.5"
+# Walk every bound endpoint, including DATATYPES and FAILURES by default.
+ikigai-conformance = "0.11.0"
+# Match the server's real SPARQL engine for the conformance walk.
+ikigai-sparql = "0.3.1"

@@ -38,10 +38,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-waker"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bitflags"
@@ -333,6 +345,84 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "http"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
+dependencies = [
+ "bytes",
+ "itoa",
+]
+
+[[package]]
+name = "http-body"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c"
+dependencies = [
+ "bytes",
+ "http",
+]
+
+[[package]]
+name = "http-body-util"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23169fe34a5fbcdd3f3862e78fb9b6fccd5f02a6dc6f732547005d45631ce71c"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "httparse"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "hyper"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c3e324da4c95177d6291d4c8730197c0d1822f8a9766814a4a44fa5ab797c9c"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "futures-core",
+ "http",
+ "http-body",
+ "httparse",
+ "httpdate",
+ "itoa",
+ "pin-project-lite",
+ "smallvec",
+ "tokio",
+]
+
+[[package]]
+name = "hyper-util"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ddc03d96684f9226b8a787cdb71488417b53ab5ea8fdb1dac946cb9431cc8bff"
+dependencies = [
+ "bytes",
+ "http",
+ "http-body",
+ "hyper",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -358,9 +448,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-a11y"
-version = "0.2.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bc29fdfea2612cf6b6316e3d5e410c6f4f12f520619e64942a3c3f90251d265"
+checksum = "fd503a4162bb7a46ab05189eed9cbf75fe7bf4d806846193c05620563af283cb"
 dependencies = [
  "ikigai-core",
  "serde",
@@ -370,9 +460,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-conformance"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98df2da22c2a08f1f836ce4d0042839f244014888949a65ae36bc845753a9fa1"
+checksum = "894255497ef50d2318b2af23e18e488d807e911ca4b6a2b3f70dc2f671e75f0b"
 dependencies = [
  "futures",
  "ikigai-core",
@@ -383,13 +473,15 @@ dependencies = [
 
 [[package]]
 name = "ikigai-core"
-version = "0.1.108"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "feb9dfe90bbfdb92756418daa0db3b930dc39bd59095c9f6580d38c3d62596b5"
+checksum = "16e30f9190918e97b2884e0a1c23b5629240e91daf940a335a2eac5918a21be7"
 dependencies = [
  "async-trait",
  "blake3",
+ "bytes",
  "futures-channel",
+ "futures-core",
  "futures-util",
  "oxiri",
  "serde",
@@ -397,22 +489,27 @@ dependencies = [
 
 [[package]]
 name = "ikigai-fn"
-version = "0.5.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5a96cbbd7cbfd8df970ac61500759ff9ebb862e89ef476a80c1afee5651adbc"
+checksum = "5c5ac322b75473e7833ff1c529514bc6ff4a048deb5f53a06660609dba87d1d1"
 dependencies = [
  "async-trait",
  "futures-util",
  "ikigai-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "ikigai-fs"
-version = "0.1.8"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51e42d9424a0deba8cdaccdeeee88f35156ed4be77d4ae93647d58b73dafa491"
+checksum = "6d8139614bad071e6034e7a3e6025c10d92cb62b303f14fe0b0c3eb852813a8e"
 dependencies = [
  "async-trait",
+ "base64",
+ "futures-core",
+ "getrandom",
  "ikigai-core",
  "rustix",
  "web-sys",
@@ -420,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "ikigai-name"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -438,23 +535,25 @@ dependencies = [
 
 [[package]]
 name = "ikigai-rdf"
-version = "0.2.5"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05a8c2d66a1e93d226262062903ce65faf3b5f1838e90f3ebe9faa6fdbfa8c0f"
+checksum = "8d36c8123e1c48ca9b95d6c597b686a4e31b802d8917e58e8a5e42cabe8a9f47"
 dependencies = [
  "async-trait",
+ "futures-util",
  "getrandom",
  "ikigai-core",
  "oxrdf",
  "oxrdfio",
+ "oxttl",
  "quick-xml",
 ]
 
 [[package]]
 name = "ikigai-sparql"
-version = "0.2.5"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f3776691c4487e3bccdb345c5f7a977d3b1b24010e0397eed26fca02d641b60"
+checksum = "bc6f284b15f286f4b2b7a9c3007691b3347d66d073c330cd4a2ed45140575f2c"
 dependencies = [
  "async-trait",
  "ikigai-core",
@@ -467,9 +566,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-vocab"
-version = "0.1.108"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6878c7b3eafcc5308e7bcb3be12f8d59d16f8f0d1862126590669762caa84b31"
+checksum = "c2405da01e3ee381eff291aafe8fbbad0addacb1f2695356639ef23f30cfe7ba"
 dependencies = [
  "ikigai-core",
  "serde_json",
@@ -477,13 +576,20 @@ dependencies = [
 
 [[package]]
 name = "ikigai-web"
-version = "0.1.63"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad325e9e9c26a15f42ad98d05026923b65dcae186412e8810a6c718d4350a1bf"
+checksum = "7a493d93724a66a06e2bdd2aa364ecd5865f82a9821035b804014a92a238def0"
 dependencies = [
  "blake3",
+ "bytes",
  "chrono",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "ikigai-core",
+ "ikigai-fn",
  "libc",
  "serde_json",
  "tokio",

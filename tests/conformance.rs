@@ -465,8 +465,9 @@ fn declared(suite: Suite) -> Suite {
 }
 
 /// The walk saw the seven module endpoints and the three fixtures, skipped
-/// nothing but FAILURES (conformance 0.10.0, off until a suite opts in), and opted out only the fixture store's Sink. An eighth module
-/// endpoint bound without a line here would be held to a weaker standard.
+/// no checks (including DATATYPES and FAILURES), and opted out only the fixture
+/// store's Sink. An eighth module endpoint bound without a line here would be
+/// held to a weaker standard.
 fn assert_shape(report: &Report) {
     assert_eq!(
         report.endpoints, 10,
@@ -477,8 +478,8 @@ fn assert_shape(report: &Report) {
     assert_eq!(report.actions, 12, "{report}");
     assert_eq!(
         report.checks.skipped().count(),
-        1,
-        "every check runs but FAILURES, which is off: {report}"
+        0,
+        "every check runs, including DATATYPES and FAILURES: {report}"
     );
     assert_eq!(report.declared.opted_out.len(), 1, "{report}");
     assert_eq!(report.declared.opted_out[0].endpoint, "registry-source");
