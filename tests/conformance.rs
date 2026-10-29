@@ -75,7 +75,7 @@ use ikigai_conformance::{Check, Fixture, Report, Suite};
 use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Capability, Description, Endpoint, Error, Exact,
     Expiry, FnEndpoint, Invocation, InvokeFuture, Iri, Kernel, ReprType, Representation, Request,
-    Result as CoreResult, UriTemplate, Verb,
+    Result as CoreResult, Space, UriTemplate, Verb,
 };
 use ikigai_name::admin::admin_scope;
 use ikigai_name::{Registry, Strategy, CAP_ADMIN_ANY, CAP_CLAIM, REGISTRY_IRI};
@@ -273,6 +273,11 @@ fn sparql_stand_in(calls: Arc<AtomicUsize>) -> AsyncFnEndpoint {
 /// to both texts (so a test can edit them), the write log, and the counters.
 struct World {
     kernel: Kernel,
+    /// The root the kernel was built from, shared so BODIES can call each
+    /// endpoint's `invoke` and `invoke_body` directly (`Suite::body_space`):
+    /// both kernel methods dispatch `invoke_body`, so the kernel alone cannot
+    /// compare them.
+    root: Arc<dyn Space>,
     registry: Arc<RwLock<String>>,
     vocabulary: Arc<RwLock<String>>,
     writes: Arc<Mutex<Vec<String>>>,
@@ -281,6 +286,13 @@ struct World {
 }
 
 impl World {
+    /// Walk `suite` over this world's kernel, with its root as the body space.
+    fn walk(&self, suite: Suite) -> Report {
+        suite
+            .body_space(Arc::clone(&self.root))
+            .run_blocking(&self.kernel)
+    }
+
     fn registry_reads(&self) -> usize {
         self.registry_reads.load(Ordering::SeqCst)
     }
@@ -330,19 +342,20 @@ fn world_with(threaded: bool, template: bool, engine: bool) -> World {
             Exact::new(VOCAB_IRI),
             vocab(Arc::clone(&vocabulary), threaded),
         );
-    let kernel = if engine {
-        Kernel::new(Arc::new(ikigai_core::Fallback::new(vec![
+    let root: Arc<dyn Space> = if engine {
+        Arc::new(ikigai_core::Fallback::new(vec![
             Arc::new(space),
             Arc::new(ikigai_sparql::space()),
-        ])))
+        ]))
     } else {
-        Kernel::new(Arc::new(space.bind(
+        Arc::new(space.bind(
             Exact::new(SPARQL_IRI),
             sparql_stand_in(Arc::clone(&sparql_calls)),
-        )))
+        ))
     };
     World {
-        kernel,
+        kernel: Kernel::new(Arc::clone(&root)),
+        root,
         registry,
         vocabulary,
         writes,
@@ -487,6 +500,39 @@ fn assert_shape(report: &Report) {
     assert!(report.declared.namespaces.is_empty(), "{report}");
 }
 
+/// Over a cacheable registry every check observed every action: in particular
+/// BODIES compared each Source's `invoke` with its `invoke_body` and held the
+/// body collect one byte short to `OverBudget`. Without [`World::walk`]'s
+/// `body_space` BODIES would list every Source here instead, so the wiring
+/// cannot silently fall off.
+fn assert_nothing_unprobed(report: &Report) {
+    assert!(
+        report.unprobed.is_empty(),
+        "every action probed by every check: {report}"
+    );
+}
+
+/// Over a live registry BODIES rightly declines every Source but the pure
+/// stand-in engine: two independent calls of an uncacheable answer cannot
+/// establish that the methods agree. Nothing else is unprobed.
+fn assert_unprobed_only_live_bodies(report: &Report) {
+    let mut unprobed: Vec<&str> = report
+        .unprobed
+        .iter()
+        .map(|u| {
+            assert_eq!(u.check, Check::Bodies, "{report}");
+            assert_eq!(u.verb, Verb::Source, "{report}");
+            assert!(u.reason.contains("uncacheable"), "{report}");
+            u.endpoint.as_str()
+        })
+        .collect();
+    unprobed.sort_unstable();
+    let mut expected = READ_FACES.to_vec();
+    expected.extend(["registry-source", "vocab"]);
+    expected.sort_unstable();
+    assert_eq!(unprobed, expected, "{report}");
+}
+
 /// The threaded registry: every read face declared cacheable and held to a cache
 /// hit, byte-identical, under a non-empty thread set; the Sinks land exactly
 /// once each under root and never under no grants; and the registry face —
@@ -495,11 +541,12 @@ fn assert_shape(report: &Report) {
 #[test]
 fn conforms() {
     let w = world(true);
-    let report = declared(stand_in_suite()).run_blocking(&w.kernel);
+    let report = w.walk(declared(stand_in_suite()));
     // Printed even when clean (`--nocapture`): the report is the record.
     eprintln!("[threaded registry]\n{report}");
     assert!(report.is_clean(), "{report}");
     assert_shape(&report);
+    assert_nothing_unprobed(&report);
     assert_eq!(report.declared.cacheable, READ_FACES, "{report}");
     assert_eq!(
         ikigai_core::space_iri("name").as_str(),
@@ -596,14 +643,16 @@ fn over_a_live_registry_nothing_is_cached() {
         );
     }
 
-    let report = stand_in_suite().run_blocking(&world(false).kernel);
+    let report = world(false).walk(stand_in_suite());
     eprintln!("[live registry, undeclared]\n{report}");
     assert!(report.is_clean(), "{report}");
     assert_shape(&report);
+    assert_unprobed_only_live_bodies(&report);
 
-    let report = declared(stand_in_suite()).run_blocking(&world(false).kernel);
+    let report = world(false).walk(declared(stand_in_suite()));
     eprintln!("[live registry, declared cacheable]\n{report}");
     assert_eq!(report.findings.len(), READ_FACES.len(), "{report}");
+    assert_unprobed_only_live_bodies(&report);
     let mut flagged: Vec<&str> = report
         .findings
         .iter()
@@ -1181,10 +1230,9 @@ fn required_inputs_are_required() {
 #[test]
 fn required_on_the_mutating_verbs() {
     let w = world(true);
-    let report = declared(stand_in_suite())
-        .required_on_mutating()
-        .run_blocking(&w.kernel);
+    let report = w.walk(declared(stand_in_suite()).required_on_mutating());
     eprintln!("[threaded registry, REQUIRED on Sink and Delete]\n{report}");
+    assert_nothing_unprobed(&report);
     assert!(report.declared.required_on_mutating, "{report}");
     let found: Vec<(&str, Option<Verb>, Check)> = report
         .findings
@@ -1432,9 +1480,10 @@ fn bound_at_the_servers_template() {
     let suite = declared(stand_in_suite())
         .cacheable(DOC)
         .fixture(Fixture::new(DOC, Verb::Source).binding("path", "resmud/core"));
-    let report = suite.run_blocking(&w.kernel);
+    let report = w.walk(suite);
     eprintln!("[threaded registry, doc also bound at {DOC_TEMPLATE}]\n{report}");
     assert!(report.is_clean(), "{report}");
+    assert_nothing_unprobed(&report);
     // The entry works: the binding carries the path, as the server relies on.
     let repr = issue(
         &w.kernel,
@@ -1499,9 +1548,10 @@ fn conforms_over_the_real_engine() {
             .pure(*id)
             .cacheable(*id)
     });
-    let report = suite.run_blocking(&w.kernel);
+    let report = w.walk(suite);
     eprintln!("[threaded registry, real ikigai-sparql]\n{report}");
     assert!(report.is_clean(), "{report}");
+    assert_nothing_unprobed(&report);
     assert_eq!(
         report.endpoints, 13,
         "seven, two fixtures, four forms: {report}"
