@@ -317,6 +317,12 @@ points at; embedded, a host binds `ikigai_name::space()` and nothing else.
 backed by the vocabulary's own git history, signed redirect provenance and
 succession, and peer mirroring.
 
+## Accessibility
+
+[ACCESSIBILITY.md](ACCESSIBILITY.md) says what this module emits that people read (the
+documentation page, its errors, the server's terminal text), the rules that output follows, what
+is tested, the known limitations, and how to report a barrier.
+
 ## License
 
 MIT or Apache-2.0, at your option.
