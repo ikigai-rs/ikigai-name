@@ -38,7 +38,7 @@ pub mod health;
 pub mod registry;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
-pub use docs::docs;
+pub use docs::{docs, style};
 pub use document::{doc, document, DOC_TEMPLATE};
 pub use health::health;
 use ikigai_core::{
@@ -207,6 +207,7 @@ pub fn space() -> ikigai_core::EndpointSpace {
         .bind(Exact::new("urn:name:claim"), claim())
         .bind(Exact::new("urn:name:admin"), admin())
         .bind(Exact::new("urn:name:docs"), docs())
+        .bind(Exact::new(docs::STYLE_IRI), style())
         .bind(Exact::new("urn:name:document"), document())
         .bind(Exact::new("urn:name:health"), health())
         .named(ikigai_core::space_iri("name"))

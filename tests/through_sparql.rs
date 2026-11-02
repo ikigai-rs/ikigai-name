@@ -99,6 +99,40 @@ fn a_term_request_returns_a_fragment_carrying_its_schema() {
     );
 }
 
+/// The page's own links (ledger #2737): `view=page` answers the whole page with
+/// the term's detail in the region, so following a term works without htmx.
+#[test]
+fn a_term_with_view_page_is_the_page_with_its_detail() {
+    let html = get(&[("prefix", "resmud"), ("term", "damage"), ("view", "page")]).expect("renders");
+    assert!(html.starts_with("<!doctype html>"), "a page: {html}");
+    assert!(
+        html.contains("<h2>damage</h2>"),
+        "the term's detail: {html}"
+    );
+    assert!(html.contains("4 terms"), "with the whole list: {html}");
+    assert!(!html.contains("Choose a term"), "{html}");
+    let fragment = get(&[("prefix", "resmud"), ("term", "damage")]).expect("renders");
+    assert!(
+        html.contains(&format!("{fragment}</main>")),
+        "the region is the fragment `term=` alone answers: {html}"
+    );
+}
+
+#[test]
+fn an_unknown_view_is_refused_naming_both() {
+    let err = get(&[("prefix", "resmud"), ("term", "damage"), ("view", "modal")])
+        .expect_err("not a view");
+    let shown = err.to_string();
+    assert!(
+        matches!(err, ikigai_core::Error::InvalidArgument { .. }),
+        "got: {err:?}"
+    );
+    assert!(
+        shown.contains("fragment") && shown.contains("page"),
+        "names the views: {shown}"
+    );
+}
+
 #[test]
 fn a_subclass_shows_what_it_descends_from() {
     let html = get(&[("prefix", "resmud"), ("term", "Weapon")]).expect("renders");
@@ -124,24 +158,48 @@ fn an_unclaimed_namespace_is_not_found() {
 }
 
 /// The theme argument reaches the stylesheet, so a chooser selection actually
-/// changes the page rather than only the form's state.
+/// changes the page rather than only the form's state: the page links the
+/// theme's stylesheet, and that stylesheet carries the theme's palette.
 #[test]
 fn the_theme_argument_changes_the_rendered_palette() {
     let auto = get(&[("prefix", "resmud")]).expect("renders");
+    assert!(auto.contains("href=\"/-/style?theme=auto\""), "{auto}");
     assert!(
-        auto.contains("prefers-color-scheme"),
+        style("auto").contains("prefers-color-scheme"),
         "auto follows the system"
     );
 
     let contrast = get(&[("prefix", "resmud"), ("theme", "contrast")]).expect("renders");
     assert!(
-        !contrast.contains("prefers-color-scheme:dark"),
+        contrast.contains("href=\"/-/style?theme=contrast\""),
+        "{contrast}"
+    );
+    let sheet = style("contrast");
+    assert!(
+        !sheet.contains("prefers-color-scheme:dark"),
         "an explicit choice is not overridden by the system"
     );
     assert!(
-        contrast.contains("#ffe066"),
+        sheet.contains("#ffe066"),
         "the high-contrast accent is present"
     );
+}
+
+/// The stylesheet, as `urn:name:style` answers it for `theme`.
+fn style(theme: &str) -> String {
+    let kernel = Kernel::new(Arc::new(
+        ikigai_core::EndpointSpace::new().bind(Exact::new("urn:name:style"), ikigai_name::style()),
+    ));
+    let repr = block_on(
+        kernel.issue(
+            Request::new(Verb::Source, Iri::parse("urn:name:style").unwrap())
+                .with_arg("theme", ArgRef::Inline(theme.as_bytes().to_vec())),
+            &Capability::root(),
+        ),
+    )
+    .expect("a stylesheet");
+    assert_eq!(repr.repr_type.media_type, "text/css");
+    String::from_utf8(repr.bytes).expect("utf-8")
 }
 
 /// Declared = enforced, and the manifold must not over-offer: docs reads
@@ -193,6 +251,16 @@ fn the_negotiated_html_is_the_documentation_face() {
     );
 }
 
+/// A term asked for at the document's own IRI (the page's link on the
+/// standalone server) is always the page with that term's detail.
+#[test]
+fn a_term_survives_negotiation_as_a_page() {
+    let negotiated =
+        document(&[("path", "resmud"), ("as", "text/html"), ("term", "Weapon")]).expect("html");
+    let direct = get(&[("prefix", "resmud"), ("term", "Weapon"), ("view", "page")]).expect("html");
+    assert_eq!(String::from_utf8_lossy(&negotiated.bytes), direct);
+}
+
 #[test]
 fn the_theme_survives_negotiation() {
     let repr = document(&[
@@ -202,8 +270,8 @@ fn the_theme_survives_negotiation() {
     ])
     .expect("renders");
     assert!(
-        String::from_utf8_lossy(&repr.bytes).contains("#ffe066"),
-        "the high-contrast accent reached the page"
+        String::from_utf8_lossy(&repr.bytes).contains("/-/style?theme=contrast"),
+        "the high-contrast stylesheet is the one the page links"
     );
 }
 

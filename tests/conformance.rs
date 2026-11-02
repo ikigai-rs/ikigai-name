@@ -1,4 +1,4 @@
-//! The module recipe as one test: `ikigai-conformance` walks the seven endpoints
+//! The module recipe as one test: `ikigai-conformance` walks the eight endpoints
 //! [`ikigai_name::space`] binds and reports every violation at once.
 //!
 //! ## The registry is a fixture — and it decides what is cacheable
@@ -84,13 +84,14 @@ use std::sync::{Arc, Mutex, RwLock};
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
-/// The seven endpoints `space()` binds, by description id (which here equals
+/// The eight endpoints `space()` binds, by description id (which here equals
 /// `name()` — PENDING #57) and IRI.
 const REGISTRY: &str = "registry";
 const RESOLVE: &str = "resolve";
 const CLAIM: &str = "claim";
 const ADMIN: &str = "admin";
 const DOCS: &str = "docs";
+const STYLE: &str = "style";
 const DOCUMENT: &str = "document";
 const HEALTH: &str = "health";
 
@@ -99,6 +100,7 @@ const RESOLVE_IRI: &str = "urn:name:resolve";
 const CLAIM_IRI: &str = "urn:name:claim";
 const ADMIN_IRI: &str = "urn:name:admin";
 const DOCS_IRI: &str = "urn:name:docs";
+const STYLE_IRI: &str = ikigai_name::docs::STYLE_IRI;
 const DOCUMENT_IRI: &str = "urn:name:document";
 const HEALTH_IRI: &str = "urn:name:health";
 
@@ -419,7 +421,7 @@ fn text(repr: &Representation) -> String {
 fn suite() -> Suite {
     Suite::new()
         // `space()` is configuration-free, so it names itself (SPACE-NAME): two
-        // calls claim `urn:iki:space:name` over the same seven doors.
+        // calls claim `urn:iki:space:name` over the same eight doors.
         .self_named_space("name", ikigai_name::space)
         .fixture(Fixture::new(RESOLVE, Verb::Source).arg("path", "resmud/core"))
         .fixture(
@@ -430,6 +432,9 @@ fn suite() -> Suite {
             Fixture::new(DOCUMENT, Verb::Source).arg("path", "resmud/core"),
         )
         .fixture(Fixture::new(DOCS, Verb::Source).arg("prefix", "resmud"))
+        // The documentation stylesheet reads nothing: a pure function of `theme`
+        // (ledger #2737), so cacheable under its own name with nothing to cut.
+        .pure(STYLE)
         // A prefix nobody holds: the pipeline probe lands this claim under root.
         .fixture(
             Fixture::new(CLAIM, Verb::Sink)
@@ -477,18 +482,18 @@ fn declared(suite: Suite) -> Suite {
     READ_FACES.iter().fold(suite, |s, id| s.cacheable(*id))
 }
 
-/// The walk saw the seven module endpoints and the three fixtures, skipped
+/// The walk saw the eight module endpoints and the three fixtures, skipped
 /// no checks (including DATATYPES and FAILURES), and opted out only the fixture
 /// store's Sink. An eighth module endpoint bound without a line here would be
 /// held to a weaker standard.
 fn assert_shape(report: &Report) {
     assert_eq!(
-        report.endpoints, 10,
-        "seven module endpoints, three fixtures: {report}"
+        report.endpoints, 11,
+        "eight module endpoints, three fixtures: {report}"
     );
-    // registry, resolve, docs, document, health: one Source each; claim: one Sink;
+    // registry, resolve, docs, style, document, health: one Source each; claim: one Sink;
     // admin: Sink + Delete; the store: Source + Sink; vocab and sparql: one each.
-    assert_eq!(report.actions, 12, "{report}");
+    assert_eq!(report.actions, 13, "{report}");
     assert_eq!(
         report.checks.skipped().count(),
         0,
@@ -496,7 +501,9 @@ fn assert_shape(report: &Report) {
     );
     assert_eq!(report.declared.opted_out.len(), 1, "{report}");
     assert_eq!(report.declared.opted_out[0].endpoint, "registry-source");
-    assert_eq!(report.declared.pure, ["sparql-select"], "{report}");
+    let mut pure = report.declared.pure.clone();
+    pure.sort_unstable();
+    assert_eq!(pure, ["sparql-select", STYLE], "{report}");
     assert!(report.declared.namespaces.is_empty(), "{report}");
 }
 
@@ -1505,10 +1512,10 @@ fn bound_at_the_servers_template() {
         "the template entry is offered: {offered:?}"
     );
     assert_eq!(
-        report.endpoints, 11,
+        report.endpoints, 12,
         "the exact entry, the template entry, the rest: {report}"
     );
-    assert_eq!(report.actions, 13, "{report}");
+    assert_eq!(report.actions, 14, "{report}");
 }
 
 /// The same suite over the real engine: the docs face's terms come from a real
@@ -1553,8 +1560,8 @@ fn conforms_over_the_real_engine() {
     assert!(report.is_clean(), "{report}");
     assert_nothing_unprobed(&report);
     assert_eq!(
-        report.endpoints, 13,
-        "seven, two fixtures, four forms: {report}"
+        report.endpoints, 14,
+        "eight, two fixtures, four forms: {report}"
     );
 
     // The page is real: every term the vocabulary defines, none it does not.
@@ -1676,15 +1683,33 @@ fn the_manifold_states_the_contract() {
             id: DOCS,
             verb: Verb::Source,
             requires: &[],
-            inputs: &[("prefix", true), ("term", false), ("theme", false)],
+            inputs: &[
+                ("prefix", true),
+                ("term", false),
+                ("view", false),
+                ("theme", false),
+            ],
             outputs: &["text/html;charset=utf-8"],
+        },
+        Action {
+            iri: STYLE_IRI,
+            id: STYLE,
+            verb: Verb::Source,
+            requires: &[],
+            inputs: &[("theme", false)],
+            outputs: &["text/css;charset=utf-8"],
         },
         Action {
             iri: DOCUMENT_IRI,
             id: DOCUMENT,
             verb: Verb::Source,
             requires: &[],
-            inputs: &[("path", true), ("as", false), ("theme", false)],
+            inputs: &[
+                ("path", true),
+                ("as", false),
+                ("theme", false),
+                ("term", false),
+            ],
             outputs: &["text/turtle", "text/html;charset=utf-8"],
         },
         Action {
