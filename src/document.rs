@@ -152,6 +152,14 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
             if let Ok(theme) = inv.inline_str("theme") {
                 request = request.with_arg("theme", ArgRef::Inline(theme.as_bytes().to_vec()));
             }
+            // A term asked for at the document's own IRI is the page's link,
+            // followed with or without JavaScript: always a whole page with
+            // that term's detail filled in (htmx selects the region from it).
+            if let Ok(term) = inv.inline_str("term") {
+                request = request
+                    .with_arg("term", ArgRef::Inline(term.as_bytes().to_vec()))
+                    .with_arg("view", ArgRef::Inline(b"page".to_vec()));
+            }
             return inv.issue(request).await;
         }
 
@@ -253,6 +261,15 @@ fn described(from: PathFrom) -> Description {
                 .input(
                     ArgSpec::new("theme")
                         .summary("passed through to the HTML face")
+                        .optional()
+                        .class(XSD_STRING),
+                )
+                .input(
+                    ArgSpec::new("term")
+                        .summary(
+                            "with the HTML face: one term's local name, whose detail the \
+                             page shows",
+                        )
                         .optional()
                         .class(XSD_STRING),
                 )

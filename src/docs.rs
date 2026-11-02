@@ -23,6 +23,33 @@
 //! people who set it once system-wide, an explicit chooser for everyone else,
 //! and a high-contrast palette above the AAA floor for people for whom AA is not
 //! enough.
+//!
+//! ## Every URL the page names is one a host serves
+//!
+//! The page works with JavaScript off, and htmx is an enhancement over it
+//! (ledger #2737: the first version named `/r/…` and `/static/…` paths that the
+//! standalone server never served, so its terms could not be opened at all):
+//!
+//! - **A term is a link** relative to the page's own location (`?as=text/html&
+//!   prefix=…&term=…&view=page`), so it reaches the namespace document the page
+//!   was served from and answers the page with that term's detail filled in.
+//!   With htmx loaded, the same URL is fetched and only the detail region's
+//!   contents are swapped, so the polite live region stays in the document and
+//!   announces the change, and focus stays on the link.
+//! - **The theme chooser is a plain `GET` form** to the page's own location with a
+//!   visible Apply button. It never submits on change, because a page that
+//!   reloads while someone is still choosing is a change of context they did not
+//!   ask for (WCAG 3.2.2).
+//! - **The stylesheet and htmx are files**, at [`STYLE_PATH`] and [`HTMX_PATH`],
+//!   never inline: a door's default `Content-Security-Policy` (`default-src
+//!   'self'`) refuses an inline `<style>`, so an inline palette is a page with no
+//!   palette. A host serving the page routes [`STYLE_PATH`] to [`STYLE_IRI`] and
+//!   [`HTMX_PATH`] to a vendored htmx (the standalone server binds `ikigai-ui`'s
+//!   `urn:iki:ui:htmx`).
+//!
+//! Both paths start with the segment `-`, which no namespace can hold: a prefix
+//! cannot begin with `-` (its administrative capability would be an exclusion),
+//! so the routes can never shadow a namespace's documents.
 
 use crate::registry::Strategy;
 use crate::{load, resolve_path};
@@ -39,8 +66,26 @@ const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 /// it from wherever it likes.
 const SPARQL_IRI: &str = "urn:sparql:select";
 
+/// The path the page loads its stylesheet from, with `?theme=`. A host serving
+/// the page routes it to [`STYLE_IRI`].
+pub const STYLE_PATH: &str = "/-/style";
+
+/// The stylesheet as a resource: [`style`], bound here by [`crate::space`].
+pub const STYLE_IRI: &str = "urn:name:style";
+
+/// The path the page loads htmx from. A host serving the page routes it to a
+/// vendored htmx; the standalone server routes it to `ikigai-ui`'s
+/// `urn:iki:ui:htmx`.
+pub const HTMX_PATH: &str = "/-/htmx";
+
+const TEXT_CSS: &str = "text/css;charset=utf-8";
+
 fn text_html() -> ReprType {
     ReprType::new("text/html").with_param("charset", "utf-8")
+}
+
+fn text_css() -> ReprType {
+    ReprType::new("text/css").with_param("charset", "utf-8")
 }
 
 // --- palettes ---------------------------------------------------------------
@@ -167,13 +212,17 @@ fn stylesheet(theme: &str) -> String {
          grid-template-columns:repeat(auto-fill,minmax(14rem,1fr))}}\
          .term{{display:block;width:100%;text-align:left;padding:.6rem .75rem;\
          border:1px solid var(--edge);border-radius:6px;background:var(--ground);\
-         color:var(--ink);font:inherit;cursor:pointer}}\
+         color:var(--ink);font:inherit;text-decoration:none}}\
+         .term strong{{color:var(--accent);text-decoration:underline}}\
          .term:hover,.term:focus-visible{{border-color:var(--accent);outline:none}}\
          .term:focus-visible{{outline:3px solid var(--accent);outline-offset:2px}}\
          .detail{{margin-top:1.5rem;padding:1rem;border:1px solid var(--edge);border-radius:6px}}\
+         .detail:focus-visible{{outline:3px solid var(--accent);outline-offset:2px}}\
          .chooser{{display:flex;gap:.5rem;align-items:center;margin:1rem 0}}\
-         select{{background:var(--ground);color:var(--ink);border:1px solid var(--edge);\
+         select,button{{background:var(--ground);color:var(--ink);border:1px solid var(--edge);\
          padding:.3rem;border-radius:4px;font:inherit}}\
+         select:focus-visible,button:focus-visible{{outline:3px solid var(--accent);\
+         outline-offset:2px}}\
          @media (prefers-reduced-motion:reduce){{*{{transition:none!important;\
          animation:none!important}}}}"
     )
@@ -300,11 +349,28 @@ async fn terms_of(inv: &Invocation<'_>, graph: &str) -> Result<Vec<Term>> {
 
 // --- rendering --------------------------------------------------------------
 
-/// One term's detail — the htmx fragment.
+/// The detail region: a polite live region that holds either the instruction or
+/// one term's detail. It is the same element in the page and in the fragment,
+/// so a swap of its CONTENTS leaves it in the document to announce the change.
+fn detail_region(inner: &str) -> String {
+    format!(
+        "<div class=\"detail\" id=\"detail\" tabindex=\"-1\" aria-live=\"polite\">{inner}</div>"
+    )
+}
+
+/// What the detail region says before any term is chosen.
+const INSTRUCTION: &str = "<p class=\"muted\">Choose a term to see its definition.</p>";
+
+/// One term's detail — the htmx fragment: the whole region, as `term=` alone
+/// has always answered.
 fn detail_html(term: &Term) -> String {
+    detail_region(&detail_body(term))
+}
+
+/// One term's detail, without the region around it.
+fn detail_body(term: &Term) -> String {
     let mut out = format!(
-        "<div class=\"detail\" id=\"detail\" tabindex=\"-1\" aria-live=\"polite\">\
-         <h2>{}</h2><p class=\"iri\">{}</p>",
+        "<h2>{}</h2><p class=\"iri\">{}</p>",
         html_text(&term.local),
         html_text(&term.iri)
     );
@@ -327,13 +393,31 @@ fn detail_html(term: &Term) -> String {
     if !rows.is_empty() {
         out.push_str(&format!("<table>{rows}</table>"));
     }
-    out.push_str("</div>");
     out
 }
 
-/// The theme chooser. A real `<select>` inside a `<form>`, so it works without
-/// JavaScript and is reachable by keyboard and screen reader; htmx upgrades it
-/// to swap in place when available.
+/// A term's link: relative to the page's own location, so it reaches whatever
+/// IRI the page was served from (the namespace document on the standalone
+/// server, `urn:name:docs` on a host that routes it), and answers the page
+/// with that term's detail. `as=text/html` because htmx's request carries no
+/// `Accept` for HTML, and the namespace document's default face is Turtle.
+fn term_href(prefix: &str, theme: &str, term: &str) -> String {
+    let mut href = format!(
+        "?as=text/html&prefix={}&term={}&view=page",
+        url_segment(prefix),
+        url_segment(term)
+    );
+    if theme != "auto" {
+        href.push_str(&format!("&theme={}", url_segment(theme)));
+    }
+    href
+}
+
+/// The theme chooser. A real `<select>` inside a plain `GET` form to the page's
+/// own location, with a visible Apply button: it works with JavaScript on or
+/// off, is reachable by keyboard and screen reader, and never reloads the page
+/// on change (WCAG 3.2.2). The new theme arrives with the reloaded page's
+/// stylesheet link, which is why nothing swaps it in place.
 fn chooser_html(prefix: &str, theme: &str) -> String {
     let options = PALETTES
         .iter()
@@ -348,29 +432,39 @@ fn chooser_html(prefix: &str, theme: &str) -> String {
         .collect::<String>();
     let auto_selected = if theme == "auto" { " selected" } else { "" };
     format!(
-        "<form class=\"chooser\" method=\"get\" \
-         hx-get=\"/r/urn:name:docs\" hx-target=\"body\" hx-trigger=\"change from:#theme\">\
+        "<form class=\"chooser\" method=\"get\">\
+         <input type=\"hidden\" name=\"as\" value=\"text/html\">\
          <input type=\"hidden\" name=\"prefix\" value=\"{}\">\
          <label for=\"theme\">Theme</label>\
          <select id=\"theme\" name=\"theme\">\
          <option value=\"auto\"{auto_selected}>Match system</option>{options}</select>\
-         <noscript><button type=\"submit\">Apply</button></noscript></form>",
+         <button type=\"submit\">Apply</button></form>",
         attr(prefix)
     )
 }
 
-/// The whole page.
-fn page_html(prefix: &str, theme: &str, source: &str, terms: &[Term]) -> String {
+/// The whole page, with `selected`'s detail in the detail region when a term
+/// was asked for, and the instruction otherwise.
+fn page_html(
+    prefix: &str,
+    theme: &str,
+    source: &str,
+    terms: &[Term],
+    selected: Option<&Term>,
+) -> String {
     let items = terms
         .iter()
         .map(|t| {
+            let url = attr(&term_href(prefix, theme, &t.local));
+            // Without JavaScript the link loads the page and lands on the
+            // region (`#detail`). htmx fetches the same page and swaps only the
+            // region's contents (`#detail > *` into `#detail`), so the live
+            // region is never replaced and announces the term; focus stays on
+            // the link.
             format!(
-                "<li><button class=\"term\" type=\"button\" \
-                 hx-get=\"/r/urn:name:docs?prefix={}&amp;term={}\" \
-                 hx-target=\"#detail\" hx-swap=\"outerHTML\">\
-                 <strong>{}</strong>{}</button></li>",
-                url_segment(prefix),
-                url_segment(&t.local),
+                "<li><a class=\"term\" href=\"{url}#detail\" hx-get=\"{url}\" \
+                 hx-select=\"#detail &gt; *\" hx-target=\"#detail\" hx-swap=\"innerHTML\" \
+                 hx-push-url=\"true\"><strong>{}</strong>{}</a></li>",
                 html_text(&t.local),
                 t.comment
                     .as_deref()
@@ -383,19 +477,27 @@ fn page_html(prefix: &str, theme: &str, source: &str, terms: &[Term]) -> String 
         })
         .collect::<String>();
 
+    let title = match selected {
+        Some(t) => format!("{} — {}", html_text(&t.local), html_text(prefix)),
+        None => html_text(prefix),
+    };
+    let detail = match selected {
+        Some(t) => detail_region(&detail_body(t)),
+        None => detail_region(INSTRUCTION),
+    };
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>{prefix} — namespace documentation</title>\
-         <style>{}</style>\
-         <script src=\"/static/htmx.min.js\" defer></script></head>\
+         <title>{title} — namespace documentation</title>\
+         <link rel=\"stylesheet\" href=\"{STYLE_PATH}?theme={}\">\
+         <meta name=\"htmx-config\" content=\"{{&quot;includeIndicatorStyles&quot;:false}}\">\
+         <script src=\"{HTMX_PATH}\" defer></script></head>\
          <body><header><h1>{prefix}</h1>\
          <p class=\"muted\">{} term{} · served from <code>{}</code></p></header>\
          {}<main><h2 id=\"terms-heading\">Terms</h2>\
          <ul class=\"terms\" aria-labelledby=\"terms-heading\">{items}</ul>\
-         <div class=\"detail\" id=\"detail\" tabindex=\"-1\" aria-live=\"polite\">\
-         <p class=\"muted\">Choose a term to see its definition.</p></div></main></body></html>",
-        stylesheet(theme),
+         {detail}</main></body></html>",
+        url_segment(theme),
         terms.len(),
         if terms.len() == 1 { "" } else { "s" },
         html_text(source),
@@ -443,16 +545,41 @@ pub fn docs() -> AsyncFnEndpoint {
 
             let terms = terms_of(inv, &graph).await?;
 
-            // A `term=` request is htmx asking for one fragment, not a page.
-            let body = match inv.inline_str("term").ok().map(|t| t.trim().to_string()) {
-                Some(wanted) if !wanted.is_empty() => {
+            // `term=` alone answers the detail region as a fragment, as it always
+            // has; with `view=page` it answers the whole page with that term's
+            // detail filled in, which is what the page's own links ask for so
+            // they work without JavaScript.
+            let wanted = inv
+                .inline_str("term")
+                .ok()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty());
+            let page = match inv.inline_str("view").ok().map(str::trim) {
+                None | Some("fragment") => false,
+                Some("page") => true,
+                Some(other) => {
+                    return Err(Error::InvalidArgument {
+                        name: "view".into(),
+                        detail: format!(
+                            "{other:?} is not a view: `fragment` answers the term's detail \
+                             alone, `page` the page with it filled in"
+                        ),
+                    })
+                }
+            };
+            let body = match wanted {
+                Some(wanted) => {
                     let term = terms
                         .iter()
                         .find(|t| t.local == wanted)
                         .ok_or_else(|| Error::NotFound(format!("name: no term {wanted:?}")))?;
-                    detail_html(term)
+                    if page {
+                        page_html(&prefix, &theme, &graph, &terms, Some(term))
+                    } else {
+                        detail_html(term)
+                    }
                 }
-                _ => page_html(&prefix, &theme, &graph, &terms),
+                None => page_html(&prefix, &theme, &graph, &terms, None),
             };
             // ★ `.cacheable()` is a claim that THIS computation is pure — the
             // same registry, graph and arguments always render the same page —
@@ -470,7 +597,8 @@ pub fn docs() -> AsyncFnEndpoint {
             .summary(
                 "A hosted namespace rendered as HTML for people, transrepted from the same \
                  Turtle the namespace serves so the two cannot drift. With `term=`, returns \
-                 that term's detail as an htmx fragment.",
+                 that term's detail as an htmx fragment, or with `view=page` the page with \
+                 that term's detail filled in.",
             )
             .action(
                 ActionSpec::new(Verb::Source)
@@ -487,6 +615,17 @@ pub fn docs() -> AsyncFnEndpoint {
                             .class(XSD_STRING),
                     )
                     .input(
+                        ArgSpec::new("view")
+                            .summary(
+                                "with `term=`: `fragment` answers the term's detail alone, \
+                                 `page` the whole page with it filled in",
+                            )
+                            .one_of(["fragment", "page"])
+                            .default_value("fragment")
+                            .optional()
+                            .class(XSD_STRING),
+                    )
+                    .input(
                         ArgSpec::new("theme")
                             .summary("color theme; `auto` follows prefers-color-scheme")
                             .one_of(["auto", "light", "dark", "contrast"])
@@ -495,6 +634,59 @@ pub fn docs() -> AsyncFnEndpoint {
                             .class(XSD_STRING),
                     )
                     .output(TEXT_HTML),
+            ),
+    )
+}
+
+/// `urn:name:style` — the documentation page's stylesheet, for one theme.
+///
+/// A file rather than an inline `<style>`, because a door's default
+/// `Content-Security-Policy` refuses inline style and the page would then have
+/// no palette at all (ledger #2737). A pure function of `theme`, so cacheable;
+/// an unknown theme degrades to the light palette, like the page's.
+///
+/// ```
+/// use ikigai_core::{Endpoint, Verb};
+///
+/// let described = ikigai_name::style().describe();
+/// let source = described
+///     .action_specs()
+///     .into_iter()
+///     .find(|a| a.verb == Verb::Source)
+///     .expect("a Source action");
+/// assert!(source.outputs.iter().any(|o| o.starts_with("text/css")));
+/// assert_eq!(ikigai_name::docs::STYLE_IRI, "urn:name:style");
+/// ```
+pub fn style() -> AsyncFnEndpoint {
+    AsyncFnEndpoint::new("style", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
+        Box::pin(async move {
+            let theme = inv
+                .inline_str("theme")
+                .map(|t| t.trim().to_string())
+                .unwrap_or_else(|_| "auto".to_string());
+            Ok(Representation::new(text_css(), stylesheet(&theme).into_bytes()).cacheable())
+        })
+    })
+    .with_description(
+        Description::new("style")
+            .title("Namespace documentation stylesheet")
+            .summary(
+                "The stylesheet the documentation page links, for one theme: every palette \
+                 checked against the WCAG contrast floor, `auto` following \
+                 prefers-color-scheme.",
+            )
+            .action(
+                ActionSpec::new(Verb::Source)
+                    .summary("the documentation stylesheet for a theme")
+                    .input(
+                        ArgSpec::new("theme")
+                            .summary("color theme; `auto` follows prefers-color-scheme")
+                            .one_of(["auto", "light", "dark", "contrast"])
+                            .default_value("auto")
+                            .optional()
+                            .class(XSD_STRING),
+                    )
+                    .output(TEXT_CSS),
             ),
     )
 }
@@ -641,7 +833,27 @@ mod tests {
         let html = chooser_html("resmud", "dark");
         assert!(html.contains("<form"), "a real form: {html}");
         assert!(html.contains("method=\"get\""), "submits on its own");
-        assert!(html.contains("<noscript>"), "offers a submit button");
+        // To the page's own location: no `action`, and no htmx request that a
+        // host might not route (ledger #2737's `/r/urn:name:docs`).
+        assert!(
+            !html.contains("action="),
+            "submits to where the page is: {html}"
+        );
+        assert!(!html.contains("hx-"), "no htmx upgrade to break: {html}");
+        // Visible with JavaScript on as well as off: a `<noscript>` button left
+        // the chooser with no way to apply a choice whenever htmx did not load.
+        assert!(
+            html.contains("<button type=\"submit\">Apply</button>"),
+            "{html}"
+        );
+        assert!(
+            !html.contains("<noscript>"),
+            "the button is always there: {html}"
+        );
+        assert!(
+            html.contains("name=\"as\" value=\"text/html\""),
+            "the reloaded page is the HTML face: {html}"
+        );
         assert!(
             html.contains("value=\"dark\" selected"),
             "reflects the choice"
@@ -659,7 +871,7 @@ mod tests {
             domain: None,
             range: None,
         }];
-        let html = page_html("resmud", "auto", "urn:file:x", &terms);
+        let html = page_html("resmud", "auto", "urn:file:x", &terms, None);
         assert!(
             html.contains("hx-target=\"#detail\""),
             "htmx targets the pane"
@@ -667,6 +879,95 @@ mod tests {
         assert!(html.contains("lang=\"en\""), "declares a language");
         assert!(html.contains("aria-live=\"polite\""), "announces the swap");
         assert!(html.contains("1 term ·"), "singular is not '1 terms'");
+        assert!(
+            html.contains("Choose a term to see its definition."),
+            "the region starts with the instruction: {html}"
+        );
+    }
+
+    /// Ledger #2737: a term is a LINK that works without JavaScript, relative to
+    /// the page's own location, and htmx fetches the same URL and swaps only the
+    /// region's contents, so the live region itself is never replaced.
+    #[test]
+    fn a_term_is_a_link_htmx_enhances() {
+        let terms = vec![Term {
+            iri: "https://x/ns#Weapon".into(),
+            local: "Weapon".into(),
+            comment: None,
+            parent: None,
+            domain: None,
+            range: None,
+        }];
+        let html = page_html("resmud", "dark", "urn:file:x", &terms, None);
+        let url = "?as=text/html&amp;prefix=resmud&amp;term=Weapon&amp;view=page&amp;theme=dark";
+        assert!(
+            html.contains(&format!("<a class=\"term\" href=\"{url}#detail\"")),
+            "a plain link: {html}"
+        );
+        assert!(html.contains(&format!("hx-get=\"{url}\"")), "{html}");
+        assert!(html.contains("hx-select=\"#detail &gt; *\""), "{html}");
+        assert!(html.contains("hx-swap=\"innerHTML\""), "{html}");
+        assert!(!html.contains("<button class=\"term\""), "{html}");
+        assert!(
+            !html.contains("/r/"),
+            "names no path a host does not serve: {html}"
+        );
+        // `auto` is the default, so the link does not carry it.
+        let auto = page_html("resmud", "auto", "urn:file:x", &terms, None);
+        assert!(!auto.contains("theme=auto&"), "{auto}");
+    }
+
+    /// The assets are files at the reserved `/-/` paths, never inline: an
+    /// inline `<style>` is refused by a door's default CSP.
+    #[test]
+    fn the_page_links_its_assets_and_inlines_none() {
+        let html = page_html("resmud", "contrast", "urn:file:x", &[], None);
+        assert!(
+            html.contains("<link rel=\"stylesheet\" href=\"/-/style?theme=contrast\">"),
+            "{html}"
+        );
+        assert!(
+            html.contains("<script src=\"/-/htmx\" defer></script>"),
+            "{html}"
+        );
+        assert!(!html.contains("<style"), "no inline style: {html}");
+        assert!(!html.contains("/static/"), "{html}");
+        assert!(
+            html.contains("includeIndicatorStyles&quot;:false"),
+            "htmx adds no inline style either: {html}"
+        );
+    }
+
+    /// `view=page` fills the region with the term's detail inside the page, and
+    /// the title names the term (WCAG 2.4.2: a page reached by a link says
+    /// which term it shows).
+    #[test]
+    fn a_page_with_a_term_fills_the_region() {
+        let term = Term {
+            iri: "https://x/ns#Weapon".into(),
+            local: "Weapon".into(),
+            comment: Some("Anything that can inflict harm.".into()),
+            parent: None,
+            domain: None,
+            range: None,
+        };
+        let html = page_html(
+            "resmud",
+            "auto",
+            "urn:file:x",
+            std::slice::from_ref(&term),
+            Some(&term),
+        );
+        assert!(
+            html.contains(&format!("{}</main>", detail_html(&term))),
+            "the region holds the detail: {html}"
+        );
+        assert!(!html.contains("Choose a term"), "{html}");
+        assert!(
+            html.contains("<title>Weapon — resmud — namespace documentation</title>"),
+            "{html}"
+        );
+        assert_eq!(html.matches("id=\"detail\"").count(), 1, "one region");
     }
 
     /// The regression guard for the bug the integration test caught: without
@@ -695,7 +996,7 @@ mod tests {
             domain: None,
             range: None,
         };
-        let page = page_html(name, "auto", name, std::slice::from_ref(&term));
+        let page = page_html(name, "auto", name, std::slice::from_ref(&term), Some(&term));
         let detail = detail_html(&term);
         for html in [&page, &detail] {
             assert!(!html.contains("a'b"), "raw ' leaked: {html}");

@@ -7,7 +7,7 @@
 //! library's tests, which call the kernel, cannot see it. These tests spawn the
 //! built `ikigai-name-server` against a scratch root and speak HTTP to it.
 //!
-//! What they pin (ledger #196, #248, #194):
+//! What they pin (ledger #196, #248, #194, #2737):
 //!
 //! - **Turtle by default and HTML by `Accept`**, at the namespace's own IRI path.
 //! - **A face this host cannot produce is a `406` that names the faces it can.**
@@ -19,6 +19,8 @@
 //! - **`?description` describes the resource** rather than answering `404`,
 //!   because the template entry declares `path` as its binding (`doc()`), so the
 //!   manifold can drive it.
+//! - **Every URL the documentation page names is served** (ledger #2737): its
+//!   script, its stylesheet, each term's link and htmx fetch, and its theme form.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -207,6 +209,119 @@ fn the_http_face_negotiates_over_the_declared_faces() {
 
     // An unclaimed namespace is not found, not an error.
     assert_eq!(server.get("/nobody", None).status, 404);
+}
+
+/// Every value the page gives `attr` (`href`, `src`, `hx-get`), unescaped, in
+/// document order.
+fn attribute_values(html: &str, attr: &str) -> Vec<String> {
+    let needle = format!(" {attr}=\"");
+    html.match_indices(&needle)
+        .map(|(at, _)| {
+            let rest = &html[at + needle.len()..];
+            let value = &rest[..rest.find('"').expect("a closed attribute")];
+            value.replace("&amp;", "&")
+        })
+        .collect()
+}
+
+/// A URL the page names, resolved against the page's own path the way a
+/// browser resolves it: a query-only reference keeps the path, an absolute
+/// path stands, and the fragment never reaches the server.
+fn resolve(page_path: &str, reference: &str) -> String {
+    let reference = reference.split('#').next().unwrap_or_default();
+    if reference.starts_with('?') {
+        format!("{page_path}{reference}")
+    } else if reference.starts_with('/') {
+        reference.to_string()
+    } else {
+        panic!("the page names {reference:?}, which this test does not resolve")
+    }
+}
+
+/// Ledger #2737: the documentation page named `/static/htmx.min.js` and
+/// `/r/urn:name:docs?…` for its script, its term buttons and its theme chooser,
+/// and this server routes neither, so on it a term's detail was unreachable.
+/// Every URL the page names must answer here, as what the page uses it for.
+#[test]
+fn every_url_the_page_names_is_served() {
+    let server = Server::start();
+    let page_path = "/resmud/core";
+    let page = server.get(page_path, Some("text/html"));
+    assert_eq!(page.status, 200, "{}", page.body);
+    assert_eq!(page.media(), "text/html");
+
+    // The script and the stylesheet: served, and as the type the browser
+    // needs (a script served `text/plain` is refused under `nosniff`).
+    let scripts = attribute_values(&page.body, "src");
+    assert!(!scripts.is_empty(), "the page loads htmx: {}", page.body);
+    for src in &scripts {
+        let got = server.get(&resolve(page_path, src), None);
+        assert_eq!(got.status, 200, "script {src}: {}", got.body);
+        assert_eq!(got.media(), "text/javascript", "script {src}");
+    }
+    let hrefs = attribute_values(&page.body, "href");
+    let (sheets, links): (Vec<&String>, Vec<&String>) =
+        hrefs.iter().partition(|h| h.starts_with("/-/style"));
+    assert_eq!(sheets.len(), 1, "one stylesheet: {}", page.body);
+    let sheet = server.get(&resolve(page_path, sheets[0]), None);
+    assert_eq!(
+        sheet.status, 200,
+        "stylesheet {}: {}",
+        sheets[0], sheet.body
+    );
+    assert_eq!(sheet.media(), "text/css");
+    assert!(sheet.body.contains("--ground"), "{}", sheet.body);
+    // The door's default CSP refuses inline style, so the palette must be the
+    // linked file, never a `<style>` the browser drops.
+    assert!(!page.body.contains("<style"), "{}", page.body);
+
+    // A term, followed as a plain link (a browser navigating, no JavaScript):
+    // the page, with the term's detail in the region.
+    assert!(!links.is_empty(), "every term is a link: {}", page.body);
+    for href in &links {
+        let got = server.get(&resolve(page_path, href), Some("text/html"));
+        assert_eq!(got.status, 200, "link {href}: {}", got.body);
+        assert_eq!(got.media(), "text/html", "link {href}");
+        assert!(
+            got.body.contains("<h2>Weapon</h2>"),
+            "link {href} shows the term: {}",
+            got.body
+        );
+    }
+
+    // The same term, fetched as htmx fetches it: no `Accept` for HTML, so the
+    // URL itself has to ask for the HTML face.
+    let fetches = attribute_values(&page.body, "hx-get");
+    assert!(
+        !fetches.is_empty(),
+        "htmx enhances the links: {}",
+        page.body
+    );
+    for url in &fetches {
+        let got = server.get(&resolve(page_path, url), None);
+        assert_eq!(got.status, 200, "hx-get {url}: {}", got.body);
+        assert_eq!(got.media(), "text/html", "hx-get {url}");
+        assert!(got.body.contains("<h2>Weapon</h2>"), "{}", got.body);
+    }
+
+    // The theme chooser: a GET form with no action submits to the page's own
+    // path with its fields as the query.
+    assert!(
+        page.body
+            .contains("<form class=\"chooser\" method=\"get\">"),
+        "{}",
+        page.body
+    );
+    let applied = server.get(
+        &format!("{page_path}?as=text/html&prefix=resmud&theme=dark"),
+        None,
+    );
+    assert_eq!(applied.status, 200, "{}", applied.body);
+    assert!(
+        applied.body.contains("href=\"/-/style?theme=dark\""),
+        "the chosen theme reaches the stylesheet: {}",
+        applied.body
+    );
 }
 
 #[test]

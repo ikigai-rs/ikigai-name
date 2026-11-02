@@ -7,18 +7,26 @@
 //!
 //! ## The Cargo feature list is the module manifest
 //!
-//! This binary links `ikigai-name`, `ikigai-fs`, `ikigai-sparql` and
-//! `ikigai-web` — and nothing else. There is no calendar, no exec, no secrets
+//! This binary links `ikigai-name`, `ikigai-fs`, `ikigai-sparql`, `ikigai-web`
+//! and `ikigai-ui` (for its vendored htmx) — and nothing else. There is no calendar, no exec, no secrets
 //! module compiled in, so a flaw in one cannot be reached from here. That is
 //! linkage-gating rather than config-gating: what this process cannot do is a
 //! property of how it was built, not of a file someone might edit.
 //!
-//! ## The public surface is two routes
+//! ## The public surface is two routes, and the page's two assets
 //!
 //! ```text
+//! /-/style       → urn:name:style      the documentation page's stylesheet
+//! /-/htmx        → urn:iki:ui:htmx     the vendored htmx it loads
 //! /{ns}          → urn:name:doc:{ns}
 //! /{ns}/{doc}    → urn:name:doc:{ns}/{doc}
 //! ```
+//!
+//! The asset routes come first and begin with `-`, which no namespace can hold
+//! (a prefix cannot begin with `-`), so they never shadow a document. The
+//! page's term links and theme form are relative to the page itself, so they
+//! reach the namespace document it was served from and need no route of their
+//! own (ledger #2737).
 //!
 //! Served `routes_only`, so a path not listed 404s before it can reach a
 //! resource. Administration is deliberately absent from the HTTP surface: claim
@@ -39,6 +47,7 @@ use ikigai_core::{
     AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, Kernel, UriTemplate,
     Verb,
 };
+use ikigai_name::docs::{HTMX_PATH, STYLE_IRI, STYLE_PATH};
 use ikigai_name::{DOC_TEMPLATE, REGISTRY_IRI};
 use ikigai_web::{fixed_cap, EdgeConfig, Route, RouteTable};
 
@@ -137,7 +146,10 @@ fn routes() -> RouteTable {
         csp: None,
     };
     RouteTable::new(vec![
-        // Most specific first: first match wins.
+        // Most specific first: first match wins. The page's assets, at paths no
+        // namespace can claim (see the module docs).
+        route(STYLE_PATH, STYLE_IRI),
+        route(HTMX_PATH, "urn:iki:ui:htmx"),
         route("/{ns}/{doc}", "urn:name:doc:{ns}/{doc}"),
         route("/{ns}", "urn:name:doc:{ns}"),
     ])
@@ -174,10 +186,13 @@ async fn main() -> std::io::Result<()> {
         .bind(Exact::new(REGISTRY_IRI), registry_alias(options.registry));
 
     // Order is the resolution order: the resolver's own names, then the engine
-    // it queries through, then the filesystem both of them read from.
+    // it queries through, the shared UI artifacts the page loads (compiled in:
+    // nothing is bound at `urn:iki:ui:dir:`), then the filesystem the resolver
+    // and the engine read from.
     let space = ikigai_core::Fallback::new(vec![
         Arc::new(names),
         Arc::new(ikigai_sparql::space()),
+        Arc::new(ikigai_ui::space()),
         // ★ File reads are uncacheable by DEFAULT, and that default is right.
         //
         // A golden thread is cut by a write THROUGH the kernel; a `git pull` or

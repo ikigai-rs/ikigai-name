@@ -82,9 +82,14 @@ is no second copy of it. Terms are extracted with SPARQL issued back through the
 kernel, so this crate carries no RDF parser and a mirrored namespace is read
 exactly like a local one.
 
-htmx does the interaction: term buttons `hx-get` their own detail into a live
-region, and the theme chooser is a real `<form method="get">` that htmx upgrades
-rather than replaces — so it works with JavaScript disabled.
+The page works with JavaScript off, and htmx only improves it. Each term is a
+link to the page with that term's detail filled in; with htmx loaded, the same
+URL is fetched and only the detail region's contents are swapped, so its live
+region announces the term and focus stays on the link. The theme chooser is a
+plain `<form method="get">` with a visible Apply button. The stylesheet
+(`urn:name:style`) and htmx are separate files at `/-/style` and `/-/htmx`, never
+inline, because a door's default Content-Security-Policy refuses an inline
+`<style>`; a host that serves the page routes those two paths.
 
 ### Color is a floor, not a preference
 
@@ -198,7 +203,8 @@ raise it.
 | IRI | verb | what |
 |---|---|---|
 | `urn:name:document` | Source | the namespace document, negotiated (`as=`) |
-| `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment |
+| `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment, or with `view=page` the page showing that term |
+| `urn:name:style` | Source | the documentation page's stylesheet for `theme=` |
 | `urn:name:resolve` | Source | how a path resolves, or a `NotFound` naming it |
 | `urn:name:registry` | Source | every claimed namespace, as JSON |
 | `urn:name:health` | Source | what this deployment holds, and what it refuses |
@@ -259,13 +265,18 @@ build rather than of a config file someone might edit.
 | `--registry NAME` | `registry.json` | the registry file within `--root` |
 | `--cache-files` | off | cache file reads; see [Cacheability](#cacheability) |
 
-The public surface is two routes, served `routes_only` so anything else 404s
-before it reaches a resource:
+The public surface is two routes, plus the documentation page's two assets,
+served `routes_only` so anything else 404s before it reaches a resource:
 
 ```text
+/-/style       → urn:name:style      the page's stylesheet
+/-/htmx        → urn:iki:ui:htmx     htmx, vendored by ikigai-ui
 /{ns}          → urn:name:doc:{ns}
 /{ns}/{doc}    → urn:name:doc:{ns}/{doc}
 ```
+
+The asset paths begin with `-`, which no namespace prefix can, so they never
+shadow a document.
 
 Each route serves two faces: Turtle by default, and the HTML documentation by
 `Accept: text/html` or `?as=text/html`. Any other type answers `406` naming
