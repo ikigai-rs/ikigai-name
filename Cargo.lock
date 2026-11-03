@@ -557,6 +557,7 @@ dependencies = [
  "ikigai-core",
  "ikigai-fn 0.7.0",
  "ikigai-fs",
+ "ikigai-repo",
  "ikigai-sparql",
  "ikigai-ui",
  "ikigai-web",
@@ -579,6 +580,17 @@ dependencies = [
  "oxrdfio",
  "oxttl",
  "quick-xml",
+]
+
+[[package]]
+name = "ikigai-repo"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b83cfe6444f283b75d0f68cf19c4954a8a5d8efa7dd6cc0c5e0cf54aa2f9dca"
+dependencies = [
+ "async-trait",
+ "futures",
+ "ikigai-core",
 ]
 
 [[package]]

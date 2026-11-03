@@ -1643,7 +1643,7 @@ fn the_manifold_states_the_contract() {
             id: REGISTRY,
             verb: Verb::Source,
             requires: &[],
-            inputs: &[],
+            inputs: &[("as-of", false)],
             outputs: JSON,
         },
         Action {
@@ -1651,7 +1651,7 @@ fn the_manifold_states_the_contract() {
             id: RESOLVE,
             verb: Verb::Source,
             requires: &[],
-            inputs: &[("path", true)],
+            inputs: &[("path", true), ("as-of", false)],
             outputs: TEXT,
         },
         Action {
@@ -1722,6 +1722,7 @@ fn the_manifold_states_the_contract() {
             inputs: &[
                 ("path", true),
                 ("as", false),
+                ("as-of", false),
                 ("theme", false),
                 ("term", false),
             ],

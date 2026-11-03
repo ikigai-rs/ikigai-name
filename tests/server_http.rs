@@ -167,6 +167,27 @@ impl Response {
     }
 }
 
+/// This server binds no history, so it cannot answer for a past date. Serving
+/// today's document to a question about March would be a wrong answer that looks
+/// right, so it refuses. The date is checked first, because a bad date is the
+/// caller's to fix on any host.
+#[test]
+fn as_of_is_refused_here_rather_than_answered_with_today() {
+    let server = Server::start();
+
+    for target in ["/resmud/core?as-of=2001-01-01", "/resmud?as-of=2001-01-01"] {
+        let refused = server.get(target, None);
+        assert_eq!(refused.status, 501, "{target}: {}", refused.body);
+        assert!(!refused.body.contains("rm:Weapon"), "{}", refused.body);
+    }
+
+    let page = server.get("/resmud/core?as-of=2001-01-01", Some("text/html"));
+    assert_eq!(page.status, 501, "{}", page.body);
+
+    let bad = server.get("/resmud/core?as-of=March", None);
+    assert_eq!(bad.status, 400, "{}", bad.body);
+}
+
 #[test]
 fn the_http_face_negotiates_over_the_declared_faces() {
     let server = Server::start();

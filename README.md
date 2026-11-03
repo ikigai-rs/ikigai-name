@@ -267,6 +267,51 @@ memory, so an unbounded one is the only way a single request can hurt the host;
 exceeding the ceiling is refused with an error naming the setting that would
 raise it.
 
+## As of a date
+
+`urn:name:document`, `urn:name:resolve` and `urn:name:registry` take `as-of`:
+what a name meant at a date, or what the namespace policy was in March. It is a
+**resolution parameter, never part of the name**, so an IRI stays one IRI at
+every date. `YYYY-MM-DD` means the end of that day in UTC; an RFC 3339 instant
+means that instant.
+
+```sh
+ikigai -c 'source urn:name:document path=resmud/core as-of=2026-03-31'
+ikigai -c 'source urn:name:registry as-of=2026-03-31'
+```
+
+The namespace comes from the registry as it stood then and the document from the
+source as it stood then, so a namespace retired since still answers for a date
+when it was in force, and one claimed since answers `NotFound` for a date before.
+Only today's `limits` apply, because they are what this deployment holds itself
+to, whatever an old file allowed.
+
+**History is the archive; the cache is not.** A past answer is read from the
+history of the repository holding the vocabulary and is never marked cacheable
+here, so its correctness cannot depend on eviction.
+
+| what | needs |
+|---|---|
+| any past answer | a binding at `urn:name:history-source`, taking `source` and `as-of` |
+| `repo_history(dir, registry_file)`, the binding over git | `urn:repo:log`, and `urn:repo:show` |
+
+**This is not usable from a stock `ikigai-repo` yet.** `urn:repo:log` picks the
+commit, but no release serves a file at a commit, so a host using `repo_history`
+must bind `urn:repo:show` itself, to the contract in
+[`src/history.rs`](src/history.rs).
+
+**The standalone server binds no history**, so it answers `as-of` with `501` and a
+sentence saying why, rather than today's document. Binding one means linking an
+exec module into an internet-facing binary this crate keeps free of them, which
+is a decision of its own.
+
+**The documentation page does not answer as of a date**: `as-of` with `text/html`
+is refused, and Turtle is what a past read serves.
+
+`repo_history` chooses by `urn:repo:log`'s **author** date, the only one it
+reports, so a commit rebased or merged long after it was written counts from when
+it was written. It follows one file name, so a date before a rename finds nothing.
+
 ## Endpoints
 
 | IRI | verb | what |
@@ -390,9 +435,11 @@ or `cargo install --locked ikigai-name --features server` for the standalone
 `ikigai-name-server` binary. Running the `server` feature needs a directory holding `registry.json` and the documents it
 points at; embedded, a host binds `ikigai_name::space()` and nothing else.
 
-**Not built**, and a permanence promise is weaker without them: as-of resolution
-backed by the vocabulary's own git history, signed redirect provenance and
-succession, and peer mirroring.
+**Built but not yet servable as it stands:** [as-of resolution](#as-of-a-date),
+which needs a file-at-a-commit resource from `ikigai-repo`.
+
+**Not built**, and a permanence promise is weaker without them: signed redirect
+provenance and succession, and peer mirroring.
 
 ## Accessibility
 

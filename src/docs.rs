@@ -61,6 +61,7 @@
 //! would read as a term of this host. With no tenant, every term is the
 //! namespace's own.
 
+use crate::history::{as_of_arg, no_page_as_of};
 use crate::registry::Strategy;
 use crate::tenant::{belongs_to, iri_host, tenant_of};
 use crate::{load, resolve_path};
@@ -561,6 +562,11 @@ fn page_html(
 pub fn docs() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("docs", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
+            // The page reads the current vocabulary, so it must not appear to
+            // answer a question about the past.
+            if as_of_arg(inv)?.is_some() {
+                return Err(no_page_as_of());
+            }
             let prefix = inv
                 .inline_str("prefix")
                 .map_err(|_| Error::MissingArgument("prefix".into()))?
@@ -572,7 +578,7 @@ pub fn docs() -> AsyncFnEndpoint {
                 .unwrap_or_else(|_| "auto".to_string());
 
             let registry = load(inv).await?;
-            let found = resolve_path(&registry, &prefix)?;
+            let found = resolve_path(&registry, &prefix, None)?;
             // Only a hosted namespace has documents here to read. A redirect is
             // someone else's to document, and saying so is more useful than an
             // empty page that looks like a vocabulary with no terms.
