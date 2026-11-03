@@ -38,18 +38,37 @@
 //! identity rather than a query parameter — `rm:Weapon` is
 //! `https://iriref.org/resmud/core#Weapon`, and the resolver has to be reachable
 //! at exactly that path.
+//!
+//! ## Tenants, by `Host`
+//!
+//! With `--tenant HOST` (repeated), each host is a separate set of identifiers,
+//! held in `--root/HOST` exactly as a single-tenant `--root` holds them: its own
+//! `registry.json`, and its own documents named relative to that directory.
+//! Moving a tenant to its own machine is therefore a copy of the directory and a
+//! DNS change, with nothing in it rewritten.
+//!
+//! The `Host` header picks the tenant and nothing else does: not a query argument,
+//! and not `X-Forwarded-Host`, which a client can write. A proxy in front must
+//! pass `Host` through. A host that is not a tenant is refused before a route is
+//! matched. The tenant is minted into the request's capability
+//! ([`ikigai_name::tenant`]), which is what partitions the kernel's cache, and the
+//! capability's file scope covers that tenant's directory alone.
 
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use ikigai_core::{
-    AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, Kernel, UriTemplate,
-    Verb,
+    AsyncFnEndpoint, Body, Capability, Description, Endpoint, EndpointSpace, Error, Exact,
+    Invocation, InvokeFuture, Iri, Kernel, Representation, Result, UriTemplate, Verb,
 };
+use ikigai_fs::FileEndpoint;
 use ikigai_name::docs::{HTMX_PATH, STYLE_IRI, STYLE_PATH};
+use ikigai_name::tenant::{normalize_host, tenant_of, tenant_scope};
 use ikigai_name::{DOC_TEMPLATE, REGISTRY_IRI};
-use ikigai_web::{fixed_cap, EdgeConfig, Route, RouteTable};
+use ikigai_web::{fixed_cap, AdmitFn, CapFn, EdgeConfig, HttpRequest, Refusal, Route, RouteTable};
 
 /// What this host was told to do. Flags and a config root only — no environment
 /// variables, which are the banned third channel.
@@ -58,20 +77,24 @@ struct Options {
     root: PathBuf,
     registry: String,
     cache_files: bool,
+    tenants: Vec<String>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "ikigai-name-server — resolve curated IRIs\n\n\
          USAGE:\n  \
-           ikigai-name-server [--listen ADDR] [--root DIR] [--registry NAME]\n\n\
+           ikigai-name-server [--listen ADDR] [--root DIR] [--registry NAME] [--tenant HOST]...\n\n\
          OPTIONS:\n  \
            --listen ADDR    address to bind (default 127.0.0.1:8080)\n  \
            --root DIR       directory urn:file:* resolves within (default .)\n  \
            --registry NAME  the registry file within --root (default registry.json)\n  \
            --cache-files    cache file reads; correct only if every change to\n                   \
                             --root is followed by a restart (a deploy is; an\n                   \
-                            editor is not)\n"
+                            editor is not)\n  \
+           --tenant HOST    answer for HOST from the directory --root/HOST, and\n                   \
+                            refuse any host not named; repeat for each host\n                   \
+                            (default: one set of namespaces in --root, for any host)\n"
     );
     std::process::exit(2)
 }
@@ -81,6 +104,7 @@ fn options() -> Options {
     let mut root = PathBuf::from(".");
     let mut registry = "registry.json".to_string();
     let mut cache_files = false;
+    let mut tenants = Vec::new();
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -93,6 +117,7 @@ fn options() -> Options {
             "--root" => root = PathBuf::from(value()),
             "--registry" => registry = value(),
             "--cache-files" => cache_files = true,
+            "--tenant" => tenants.push(value()),
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("ikigai-name-server: unknown option `{other}`");
@@ -110,7 +135,126 @@ fn options() -> Options {
         root,
         registry,
         cache_files,
+        tenants,
     }
+}
+
+/// `urn:file:*` for a server with tenants: the same path means a different file
+/// for each, because each tenant's files are jailed to its own directory. A
+/// request naming no tenant reads nothing.
+struct TenantFiles {
+    jails: HashMap<String, FileEndpoint>,
+}
+
+impl TenantFiles {
+    fn jail(&self, inv: &Invocation<'_>) -> Result<&FileEndpoint> {
+        tenant_of(inv.capability)
+            .and_then(|tenant| self.jails.get(tenant))
+            .ok_or_else(|| {
+                Error::Denied(format!(
+                    "name: {} is read only on behalf of a tenant",
+                    inv.request.target.as_str()
+                ))
+            })
+    }
+}
+
+#[async_trait]
+impl Endpoint for TenantFiles {
+    async fn invoke(&self, inv: &Invocation<'_>) -> Result<Representation> {
+        self.jail(inv)?.invoke(inv).await
+    }
+
+    async fn invoke_body(&self, inv: &Invocation<'_>) -> Result<Representation<Body>> {
+        self.jail(inv)?.invoke_body(inv).await
+    }
+
+    fn name(&self) -> &str {
+        "tenant-files"
+    }
+
+    fn describe(&self) -> Description {
+        match self.jails.values().next() {
+            Some(jail) => jail.describe(),
+            None => Description::new("tenant-files"),
+        }
+    }
+}
+
+/// Each tenant's directory, canonicalized once for its jail and its ACL (see the
+/// note in `main`). A bad name, a repeat, a missing directory, or two tenants
+/// sharing files stops the server rather than serving something else: tenants
+/// that can read each other's files are not separate.
+fn tenant_dirs(root: &std::path::Path, names: &[String]) -> BTreeMap<String, PathBuf> {
+    let refuse = |why: String| -> ! {
+        eprintln!("ikigai-name-server: {why}");
+        std::process::exit(2)
+    };
+    let mut dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for name in names {
+        let host = match normalize_host(name) {
+            Some(host) if host == *name => host,
+            _ => refuse(format!(
+                "--tenant `{name}` is not a lowercase host name with no port, like iriref.org"
+            )),
+        };
+        if dirs.contains_key(&host) {
+            refuse(format!("--tenant {host} is named twice"));
+        }
+        let wanted = root.join(&host);
+        let dir = wanted.canonicalize().unwrap_or_else(|e| {
+            refuse(format!(
+                "cannot resolve the directory for tenant {host}, {}: {e}",
+                wanted.display()
+            ))
+        });
+        if let Some((other, _)) = dirs
+            .iter()
+            .find(|(_, held)| dir.starts_with(held) || held.starts_with(&dir))
+        {
+            refuse(format!(
+                "tenants {other} and {host} share files; give each its own directory"
+            ));
+        }
+        dirs.insert(host, dir);
+    }
+    dirs
+}
+
+/// The tenant a request's `Host` names, if it carries exactly one that parses.
+/// A request with two is a request two hosts could read differently.
+fn request_host(req: &HttpRequest) -> Option<String> {
+    let mut hosts = req.headers.iter().filter(|(name, _)| name == "host");
+    let host = hosts.next()?;
+    if hosts.next().is_some() {
+        return None;
+    }
+    normalize_host(&host.1)
+}
+
+/// Refuse a request for a host this server does not answer for, before a route
+/// is matched, so `OPTIONS` and `?description` disclose nothing to it either.
+fn admit_tenants(hosts: Vec<String>) -> AdmitFn {
+    Arc::new(move |req| match request_host(req) {
+        Some(host) if hosts.contains(&host) => None,
+        Some(host) => Some(Refusal {
+            status: 421,
+            reason: format!("name: this server does not answer for {host:?}"),
+        }),
+        None => Some(Refusal {
+            status: 400,
+            reason: "name: this request needs exactly one Host header naming a host".to_string(),
+        }),
+    })
+}
+
+/// The capability for a request: its tenant, and reading that tenant's directory.
+/// Anything else gets no authority at all, should it ever pass admission.
+fn tenant_caps(ceilings: HashMap<String, Vec<String>>) -> CapFn {
+    Arc::new(move |req| {
+        let scopes = request_host(req).and_then(|host| ceilings.get(&host).cloned());
+        Capability::scoped(scopes.unwrap_or_default())
+    })
 }
 
 /// Bind `urn:name:registry-source` onto a file, by resolving it through the
@@ -173,6 +317,8 @@ async fn main() -> std::io::Result<()> {
         std::process::exit(2)
     });
 
+    let tenants = tenant_dirs(&root, &options.tenants);
+
     let names = ikigai_name::space()
         // The path-carrying face, bound alongside the plain `urn:name:document`
         // so both spellings resolve: an IRI whose tail IS the path, and the
@@ -202,7 +348,24 @@ async fn main() -> std::io::Result<()> {
         // a deploy, which restarts the process anyway. Without it every
         // documentation view re-reads the file and re-runs its SPARQL query —
         // correct, and considerably slower.
-        Arc::new(if options.cache_files {
+        Arc::new(if !tenants.is_empty() {
+            let jails = tenants.iter().map(|(host, dir)| {
+                let jail = FileEndpoint::new(dir);
+                let jail = if options.cache_files {
+                    jail.cacheable()
+                } else {
+                    jail
+                };
+                (host.clone(), jail)
+            });
+            EndpointSpace::new().bind(
+                UriTemplate::parse(ikigai_fs::FILE_TEMPLATE)
+                    .expect("FILE_TEMPLATE is a valid template"),
+                TenantFiles {
+                    jails: jails.collect(),
+                },
+            )
+        } else if options.cache_files {
             ikigai_fs::cacheable_space(&root)
         } else {
             ikigai_fs::space(&root)
@@ -210,7 +373,7 @@ async fn main() -> std::io::Result<()> {
     ]);
     let kernel = Arc::new(Kernel::new(Arc::new(space)));
 
-    let config = EdgeConfig {
+    let mut config = EdgeConfig {
         // A path not in the table 404s before it reaches a resource, so the
         // route file is the whole public surface rather than a convenience over
         // one.
@@ -231,14 +394,33 @@ async fn main() -> std::io::Result<()> {
     // `urn:name:admin` are Sinks, so this process physically cannot perform
     // them however it is addressed — administration belongs on a local or
     // authenticated transport, not on the open internet.
-    let ceiling = vec![format!("urn:cap:fs:read:{}", root.display())];
+    //
+    // With tenants, the same two bounds hold per request: each is jailed to its
+    // own directory, and its capability reads that directory alone.
+    let jailed = if tenants.is_empty() {
+        root.display().to_string()
+    } else {
+        let hosts = tenants.keys().cloned().collect::<Vec<_>>();
+        format!("{}/ for tenants {}", root.display(), hosts.join(", "))
+    };
+    let cap_fn = if tenants.is_empty() {
+        fixed_cap(vec![format!("urn:cap:fs:read:{}", root.display())])
+    } else {
+        let ceilings = tenants.iter().map(|(host, dir)| {
+            let scope = tenant_scope(host).expect("a normalized tenant is a host name");
+            let read = format!("urn:cap:fs:read:{}", dir.display());
+            (host.clone(), vec![scope, read])
+        });
+        config.admit_fn = Some(admit_tenants(tenants.keys().cloned().collect()));
+        tenant_caps(ceilings.collect())
+    };
 
     eprintln!(
         "ikigai-name-server: {} → {} (read-only, jailed to {}, file cache {})",
         options.listen,
         REGISTRY_IRI,
-        root.display(),
+        jailed,
         if options.cache_files { "on" } else { "off" }
     );
-    ikigai_web::serve_with(kernel, fixed_cap(ceiling), options.listen, config).await
+    ikigai_web::serve_with(kernel, cap_fn, options.listen, config).await
 }

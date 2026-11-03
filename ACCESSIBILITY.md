@@ -12,7 +12,7 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-name/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-name/security/advisories/new) |
-| Last reviewed | 2026-11-01 |
+| Last reviewed | 2026-11-03 |
 
 ## What it emits that people read
 
@@ -26,13 +26,15 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
 - **Errors and refusals** (`src/lib.rs`, `src/document.rs`, `src/docs.rs`, `src/admin.rs`): most
   start `name:` and name the namespace or path they are about (`name: no namespace claims "x"`,
   `name: "x" is retired: <reason>`, `name: "x" overlaps the claimed namespace "y"`,
-  `name: administering "x" needs <capability>`).
+  `name: administering "x" needs <capability>`, `name: this server does not answer for "x"`,
+  `name: "x" is not a term of this host: it lives at <IRI>`).
 - **Plain-text and JSON answers**: `urn:name:resolve` answers a strategy and its source,
   separated by a tab (`hosted`, then `urn:file:…`); `claim` and `admin` answer one line
   (`claimed <prefix>`, `updated <prefix>`, `retired <prefix>`, with the owner or the reason after
   a tab); `registry` and `health` answer JSON.
 - **The standalone server's terminal text** (`src/bin/server.rs`): its usage text, a startup line
-  saying where it listens and what it may read, and refusals starting `ikigai-name-server:`.
+  saying where it listens, what it may read and which tenants it answers for, and refusals starting
+  `ikigai-name-server:`.
 
 Not this repository's: the error page a browser gets when a request fails (the HTTP door's, from
 `ikigai-web`), the Turtle and other representations of a namespace (the namespace owner's
@@ -50,6 +52,12 @@ vocabulary as written.
   term. With htmx loaded, the same URL is fetched and only the region's contents are swapped
   (`hx-select="#detail > *"`, `hx-swap="innerHTML"`), so the region is never replaced, and the
   address bar takes the term's URL.
+- **A term on another host is a labeled link, not a term of this page**: when a server has
+  tenants, those terms sit under a second `<h2>Defined elsewhere</h2>` that labels their list
+  (`aria-labelledby`), each an ordinary link whose text is the term's whole IRI (long IRIs wrap, so
+  the page does not scroll sideways). An IRI that is not `http:` or `https:` is text. The heading
+  and list are absent when there are none, so a page with no such terms is unchanged. In a term's
+  detail, a parent, domain or range on another host shows its whole IRI instead of its local name.
 - **The detail region is a polite live region** (`aria-live="polite"`) that starts with an
   instruction (`Choose a term to see its definition.`), and a term's detail uses a table whose
   rows have `<th scope="row">` headers. Choosing a term through htmx leaves focus on the link
@@ -85,6 +93,10 @@ vocabulary as written.
   `a_term_is_a_link_htmx_enhances`, `the_page_links_its_assets_and_inlines_none`,
   `a_page_with_a_term_fills_the_region`; `term_text_is_escaped` and
   `hostile_names_are_escaped_in_attributes_and_text`.
+- `tests/tenancy_http.rs` (with the `server` feature) pins the "Defined elsewhere" list's label,
+  its links and its text-only case (`a_term_lives_in_one_tenant_and_is_referenced_from_the_others`,
+  `only_a_web_iri_is_a_link_in_the_references`), and the words of the host and configuration
+  refusals.
 - `tests/through_sparql.rs` renders the page, a term's fragment and a term's page over the real
   SPARQL engine (`the_page_documents_every_term_in_the_vocabulary`,
   `a_term_request_returns_a_fragment_carrying_its_schema`,
@@ -103,7 +115,9 @@ vocabulary as written.
   same check confirmed that choosing a term keeps the live region element, swaps its contents,
   leaves focus on the link and updates the address and title, and that Apply restyles the page.
   No screen reader has read the page, and axe cannot run with JavaScript off; the JavaScript-off
-  path is covered by the HTTP test above.
+  path is covered by the HTTP test above. The "Defined elsewhere" list (2026-11-03, ledger #3047)
+  has not been through this check: it reuses the link color the palette tests measure, and is
+  otherwise pinned only by the tests above.
 
 ## Known limitations
 
@@ -119,6 +133,8 @@ with people or assistive technology:
   whole comment.
 - The theme chooser sits between the `<header>` and the `<main>`, outside every landmark.
 - `urn:name:resolve`, `claim` and `admin` answer tab-separated fields with no labels.
+- A refusal for a host that is not a tenant cannot say which host would work: it names the host it
+  was given and no next step, because the list of tenants is not this refusal's to disclose.
 
 ## Contributing
 
@@ -143,3 +159,4 @@ you are comfortable sharing them. Anything security-sensitive goes through
 |---|---|
 | 2026-10-31 | First version. |
 | 2026-11-01 | Terms are links that work without JavaScript, htmx swaps the region's contents, the theme chooser is a plain form, and the stylesheet and htmx are served by the standalone server (ledger #2737). Checked in a browser and with axe. |
+| 2026-11-03 | Tenants by host: the "Defined elsewhere" list, whole IRIs for references to another host, and the host refusals (ledger #3047). Not checked in a browser or with axe. |

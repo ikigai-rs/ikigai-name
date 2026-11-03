@@ -50,8 +50,19 @@
 //! Both paths start with the segment `-`, which no namespace can hold: a prefix
 //! cannot begin with `-` (its administrative capability would be an exclusion),
 //! so the routes can never shadow a namespace's documents.
+//!
+//! ## A tenant documents only its own terms
+//!
+//! Under a capability naming a tenant ([`crate::tenant`]), a term whose IRI is on
+//! another host lives there, and this tenant can only refer to it. The page lists
+//! it under "Defined elsewhere", linked to where it lives, rather than as a term
+//! of this namespace; `term=` will not render it; and a term's parent, domain or
+//! range on another host is shown as its whole IRI, because its local name alone
+//! would read as a term of this host. With no tenant, every term is the
+//! namespace's own.
 
 use crate::registry::Strategy;
+use crate::tenant::{belongs_to, iri_host, tenant_of};
 use crate::{load, resolve_path};
 use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation, InvokeFuture,
@@ -218,6 +229,7 @@ fn stylesheet(theme: &str) -> String {
          .term:focus-visible{{outline:3px solid var(--accent);outline-offset:2px}}\
          .detail{{margin-top:1.5rem;padding:1rem;border:1px solid var(--edge);border-radius:6px}}\
          .detail:focus-visible{{outline:3px solid var(--accent);outline-offset:2px}}\
+         .references{{overflow-wrap:anywhere}}\
          .chooser{{display:flex;gap:.5rem;align-items:center;margin:1rem 0}}\
          select,button{{background:var(--ground);color:var(--ink);border:1px solid var(--edge);\
          padding:.3rem;border-radius:4px;font:inherit}}\
@@ -363,12 +375,21 @@ const INSTRUCTION: &str = "<p class=\"muted\">Choose a term to see its definitio
 
 /// One term's detail — the htmx fragment: the whole region, as `term=` alone
 /// has always answered.
-fn detail_html(term: &Term) -> String {
-    detail_region(&detail_body(term))
+fn detail_html(term: &Term, tenant: Option<&str>) -> String {
+    detail_region(&detail_body(term, tenant))
+}
+
+/// A term a detail row refers to: its local name, unless it lives on another
+/// host, where the local name alone would read as a term of this one.
+fn reference_text(iri: &str, tenant: Option<&str>) -> String {
+    match tenant {
+        Some(tenant) if !belongs_to(iri, tenant) => iri.to_string(),
+        _ => local_name(iri),
+    }
 }
 
 /// One term's detail, without the region around it.
-fn detail_body(term: &Term) -> String {
+fn detail_body(term: &Term, tenant: Option<&str>) -> String {
     let mut out = format!(
         "<h2>{}</h2><p class=\"iri\">{}</p>",
         html_text(&term.local),
@@ -386,7 +407,7 @@ fn detail_body(term: &Term) -> String {
         if let Some(value) = value {
             rows.push_str(&format!(
                 "<tr><th scope=\"row\">{label}</th><td><code>{}</code></td></tr>",
-                html_text(&local_name(value))
+                html_text(&reference_text(value, tenant))
             ));
         }
     }
@@ -443,6 +464,31 @@ fn chooser_html(prefix: &str, theme: &str) -> String {
     )
 }
 
+/// The terms this vocabulary names that live on another host: a labeled list,
+/// or nothing when there are none. An `http:` or `https:` IRI is a link to where
+/// the term lives; any other scheme is text, so a vocabulary cannot put a
+/// `javascript:` link on the page.
+fn references_html(referenced: &[Term]) -> String {
+    if referenced.is_empty() {
+        return String::new();
+    }
+    let items = referenced
+        .iter()
+        .map(|t| {
+            let text = html_text(&t.iri);
+            if iri_host(&t.iri).is_some() {
+                format!("<li><a href=\"{}\">{text}</a></li>", attr(&t.iri))
+            } else {
+                format!("<li><code>{text}</code></li>")
+            }
+        })
+        .collect::<String>();
+    format!(
+        "<h2 id=\"references-heading\">Defined elsewhere</h2>\
+         <ul class=\"references\" aria-labelledby=\"references-heading\">{items}</ul>"
+    )
+}
+
 /// The whole page, with `selected`'s detail in the detail region when a term
 /// was asked for, and the instruction otherwise.
 fn page_html(
@@ -450,7 +496,9 @@ fn page_html(
     theme: &str,
     source: &str,
     terms: &[Term],
+    referenced: &[Term],
     selected: Option<&Term>,
+    tenant: Option<&str>,
 ) -> String {
     let items = terms
         .iter()
@@ -482,7 +530,7 @@ fn page_html(
         None => html_text(prefix),
     };
     let detail = match selected {
-        Some(t) => detail_region(&detail_body(t)),
+        Some(t) => detail_region(&detail_body(t, tenant)),
         None => detail_region(INSTRUCTION),
     };
     format!(
@@ -496,12 +544,13 @@ fn page_html(
          <p class=\"muted\">{} term{} · served from <code>{}</code></p></header>\
          {}<main><h2 id=\"terms-heading\">Terms</h2>\
          <ul class=\"terms\" aria-labelledby=\"terms-heading\">{items}</ul>\
-         {detail}</main></body></html>",
+         {detail}{}</main></body></html>",
         url_segment(theme),
         terms.len(),
         if terms.len() == 1 { "" } else { "s" },
         html_text(source),
         chooser_html(prefix, theme),
+        references_html(referenced),
         prefix = html_text(prefix),
     )
 }
@@ -543,7 +592,13 @@ pub fn docs() -> AsyncFnEndpoint {
                 }
             };
 
-            let terms = terms_of(inv, &graph).await?;
+            // The host this request is for owns the terms on that host. Any other
+            // term this vocabulary names lives elsewhere, and is only referred to.
+            let tenant = tenant_of(inv.capability);
+            let (terms, referenced): (Vec<Term>, Vec<Term>) = terms_of(inv, &graph)
+                .await?
+                .into_iter()
+                .partition(|t| tenant.is_none_or(|tenant| belongs_to(&t.iri, tenant)));
 
             // `term=` alone answers the detail region as a fragment, as it always
             // has; with `view=page` it answers the whole page with that term's
@@ -569,17 +624,31 @@ pub fn docs() -> AsyncFnEndpoint {
             };
             let body = match wanted {
                 Some(wanted) => {
-                    let term = terms
-                        .iter()
-                        .find(|t| t.local == wanted)
-                        .ok_or_else(|| Error::NotFound(format!("name: no term {wanted:?}")))?;
+                    let term = terms.iter().find(|t| t.local == wanted).ok_or_else(|| {
+                        Error::NotFound(match referenced.iter().find(|t| t.local == wanted) {
+                            Some(t) => format!(
+                                "name: {wanted:?} is not a term of this host: it lives at {}",
+                                t.iri
+                            ),
+                            None => format!("name: no term {wanted:?}"),
+                        })
+                    })?;
                     if page {
-                        page_html(&prefix, &theme, &graph, &terms, Some(term))
+                        let selected = Some(term);
+                        page_html(
+                            &prefix,
+                            &theme,
+                            &graph,
+                            &terms,
+                            &referenced,
+                            selected,
+                            tenant,
+                        )
                     } else {
-                        detail_html(term)
+                        detail_html(term, tenant)
                     }
                 }
-                None => page_html(&prefix, &theme, &graph, &terms, None),
+                None => page_html(&prefix, &theme, &graph, &terms, &referenced, None, tenant),
             };
             // ★ `.cacheable()` is a claim that THIS computation is pure — the
             // same registry, graph and arguments always render the same page —
@@ -823,7 +892,7 @@ mod tests {
             domain: None,
             range: None,
         };
-        let html = detail_html(&term);
+        let html = detail_html(&term, None);
         assert!(!html.contains("<script>"), "escaped: {html}");
         assert!(html.contains("&lt;script&gt;"));
     }
@@ -871,7 +940,7 @@ mod tests {
             domain: None,
             range: None,
         }];
-        let html = page_html("resmud", "auto", "urn:file:x", &terms, None);
+        let html = page_html("resmud", "auto", "urn:file:x", &terms, &[], None, None);
         assert!(
             html.contains("hx-target=\"#detail\""),
             "htmx targets the pane"
@@ -898,7 +967,7 @@ mod tests {
             domain: None,
             range: None,
         }];
-        let html = page_html("resmud", "dark", "urn:file:x", &terms, None);
+        let html = page_html("resmud", "dark", "urn:file:x", &terms, &[], None, None);
         let url = "?as=text/html&amp;prefix=resmud&amp;term=Weapon&amp;view=page&amp;theme=dark";
         assert!(
             html.contains(&format!("<a class=\"term\" href=\"{url}#detail\"")),
@@ -913,7 +982,7 @@ mod tests {
             "names no path a host does not serve: {html}"
         );
         // `auto` is the default, so the link does not carry it.
-        let auto = page_html("resmud", "auto", "urn:file:x", &terms, None);
+        let auto = page_html("resmud", "auto", "urn:file:x", &terms, &[], None, None);
         assert!(!auto.contains("theme=auto&"), "{auto}");
     }
 
@@ -921,7 +990,7 @@ mod tests {
     /// inline `<style>` is refused by a door's default CSP.
     #[test]
     fn the_page_links_its_assets_and_inlines_none() {
-        let html = page_html("resmud", "contrast", "urn:file:x", &[], None);
+        let html = page_html("resmud", "contrast", "urn:file:x", &[], &[], None, None);
         assert!(
             html.contains("<link rel=\"stylesheet\" href=\"/-/style?theme=contrast\">"),
             "{html}"
@@ -956,10 +1025,12 @@ mod tests {
             "auto",
             "urn:file:x",
             std::slice::from_ref(&term),
+            &[],
             Some(&term),
+            None,
         );
         assert!(
-            html.contains(&format!("{}</main>", detail_html(&term))),
+            html.contains(&format!("{}</main>", detail_html(&term, None))),
             "the region holds the detail: {html}"
         );
         assert!(!html.contains("Choose a term"), "{html}");
@@ -996,8 +1067,16 @@ mod tests {
             domain: None,
             range: None,
         };
-        let page = page_html(name, "auto", name, std::slice::from_ref(&term), Some(&term));
-        let detail = detail_html(&term);
+        let page = page_html(
+            name,
+            "auto",
+            name,
+            std::slice::from_ref(&term),
+            &[],
+            Some(&term),
+            None,
+        );
+        let detail = detail_html(&term, None);
         for html in [&page, &detail] {
             assert!(!html.contains("a'b"), "raw ' leaked: {html}");
             assert!(!html.contains("c<d"), "raw < leaked: {html}");

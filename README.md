@@ -126,6 +126,55 @@ registry that would arbitrate by file order.
 Comparison is segment-wise, never textual: `acme` contains `acme/vocab` and is
 unrelated to `acmecorp`.
 
+### Tenants by host
+
+The rule above is about prefixes inside one registry. One deployment can also
+answer for several domains, each a **different set of hosted identifiers**:
+multi-tenancy, not aliasing. `https://urnid.org/resmud/core#Weapon` and
+`https://iriref.org/resmud/core#Weapon` are two terms, so each host claims its
+prefixes independently, and a term lives in exactly one tenant: the one its IRI's
+host names.
+
+```sh
+ikigai-name-server --root /srv/tenants \
+  --tenant iriref.org --tenant urnid.org --tenant idref.org
+```
+
+```text
+/srv/tenants/iriref.org/registry.json     the same layout a single --root holds
+/srv/tenants/iriref.org/vocab/core.ttl    urn:file:vocab/core.ttl, for iriref.org
+/srv/tenants/urnid.org/registry.json
+/srv/tenants/urnid.org/vocab/core.ttl     urn:file:vocab/core.ttl, for urnid.org
+```
+
+| keyed on `Host` | how |
+|---|---|
+| storage | each tenant's `urn:file:*` is jailed to its own directory, and its capability reads only that directory |
+| config | each tenant's `registry.json`: its claims, strategies, redirect targets and `limits` |
+| caches | the door mints `urn:cap:name:tenant:<host>` into the request's capability, and the kernel's cache key holds the capability, at every depth of a call. An HTTP cache keys on the host already, as part of the URL |
+| generated documents | the page and its links are relative or come from that tenant's vocabulary; a term on another host is listed under "Defined elsewhere", linked to where it lives, and `term=` refuses it with that address |
+
+**Splitting a tenant off is a copy and a DNS change.** Its directory is already a
+whole `--root`, so nothing in it is rewritten and it answers the same bytes alone
+(`a_tenants_directory_splits_off_unchanged`).
+
+Only `Host` picks the tenant. Not a query argument, and not `X-Forwarded-Host`,
+which a client can write: a proxy in front must pass `Host` through (Apache:
+`ProxyPreserveHost On`). A host that is not a tenant answers `421` before a route
+is matched, and a request without exactly one `Host` naming a host answers `400`.
+A bad `--tenant`, a missing directory, or two tenants resolving to shared files
+stops the server at startup. With no `--tenant`, one set of namespaces in `--root`
+answers for any host, as it always has.
+
+A host embedding the module gets the same partition by minting
+[`tenant_scope`](src/tenant.rs) into the capability it issues under, and binding
+a `urn:name:registry-source` that keys on `tenant_of`.
+
+**Not enforced: Turtle is served as stored.** A tenant's vocabulary may state
+anything about any IRI, and this crate carries no RDF parser. A file on urnid.org
+that declares an iriref.org term still says so in its Turtle; only the
+documentation face refuses to present that term as urnid.org's.
+
 ### Two authorities, because an unclaimed prefix has no owner
 
 A prefix nobody holds cannot be gated by its own administrative capability, so
@@ -284,6 +333,7 @@ build rather than of a config file someone might edit.
 | `--root DIR` | `.` | directory `urn:file:*` resolves within, and the jail |
 | `--registry NAME` | `registry.json` | the registry file within `--root` |
 | `--cache-files` | off | cache file reads; see [Cacheability](#cacheability) |
+| `--tenant HOST` | none | answer for `HOST` from `--root/HOST`, and refuse any host not named; repeatable. See [Tenants by host](#tenants-by-host) |
 
 The public surface is two routes, plus the documentation page's two assets,
 served `routes_only` so anything else 404s before it reaches a resource:
