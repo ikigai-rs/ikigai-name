@@ -162,6 +162,26 @@ instead: the claim survives, the prefix can never be re-issued, and dereferencin
 an IRI under it reports the retirement and its reason rather than pretending the
 namespace never existed.
 
+### Conditional registry writes
+
+Claim, update, and retirement read the registry through the kernel, retain the
+Source representation's content ID, and send it as an inline `if-match` argument
+alongside `content` on the Sink to `urn:name:registry-source`. The token identifies
+the original representation (media type and bytes), including its JSON formatting;
+it is not the hash of the parsed or reserialized registry.
+
+A writable registry binding must compare that token with its current Source
+content ID and replace the document **atomically**. A stale token must leave the
+registry unchanged and return `Error::Conflict` naming the current token. The
+module propagates that refusal without retrying: read again and reconsider the
+edit against the new registry. Two writers from the same token can therefore
+commit at most one different replacement, without a module-level lock.
+
+This is a backing-store contract, not a generic kernel precondition: never bind
+an unconditional Sink that ignores `if-match`. Read-only bindings still work for
+resolution. The standalone server's registry alias is Source-only; this change
+does not add file compare-and-set support or expose administration over HTTP.
+
 ## The registry is data, not code
 
 ```json
@@ -300,10 +320,6 @@ authenticated transport.
 - **A retired namespace answers `404`, not `410`.** The distinction — *gone* as
   against *never here* — is exactly what a tombstone exists to express, and it
   is lost at the HTTP boundary for the same reason.
-- **Registry writes are read-modify-write with no compare-and-set**, so two
-  racing administrative writes can lose one. Acceptable while writes are rare
-  and operator-driven; the fix is a validity-token precondition on the Sink, not
-  a lock.
 
 ## 0.3.0 migration
 

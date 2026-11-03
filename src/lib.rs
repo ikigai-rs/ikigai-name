@@ -42,8 +42,8 @@ pub use docs::{docs, style};
 pub use document::{doc, document, DOC_TEMPLATE};
 pub use health::health;
 use ikigai_core::{
-    ArgSpec, AsyncFnEndpoint, Description, Error, Exact, Invocation, InvokeFuture, Iri, ReprType,
-    Representation, Result, Verb,
+    ArgSpec, AsyncFnEndpoint, ContentId, Description, Error, Exact, Invocation, InvokeFuture, Iri,
+    ReprType, Representation, Result, Verb,
 };
 pub use registry::{ClaimError, LoadError, Namespace, Registry, Strategy};
 
@@ -55,6 +55,13 @@ pub const CAP_ADMIN: &str = "urn:cap:name:admin";
 /// Where the registry is read from. A bound IRI rather than a path, so an
 /// operator can point it at a file, a remote node, or a store without this
 /// module knowing which.
+///
+/// A writable binding must implement atomic conditional replacement: its Sink
+/// accepts `content` (the new JSON) and `if-match` (the content ID of the Source
+/// representation read before editing). It must compare against the current
+/// Source content ID and replace as one operation, or refuse with
+/// [`Error::Conflict`] naming the current token. It must never ignore `if-match`.
+/// Read-only bindings need only implement Source.
 pub const REGISTRY_IRI: &str = "urn:name:registry-source";
 
 /// The XSD `string` datatype IRI — the `class` of a path argument.
@@ -76,6 +83,12 @@ fn text_plain_utf8() -> ReprType {
 /// is also the migration path to a real store when file-and-page-cache stops
 /// being enough.
 pub(crate) async fn load(inv: &Invocation<'_>) -> Result<Registry> {
+    Ok(load_versioned(inv).await?.0)
+}
+
+/// Keep the exact Source representation's identity alongside the parsed data.
+/// Hashing reserialized JSON would change the token when formatting changes.
+pub(crate) async fn load_versioned(inv: &Invocation<'_>) -> Result<(Registry, ContentId)> {
     let iri = Iri::parse(REGISTRY_IRI).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
     let repr = inv.source(&iri).await?;
     // Name the resource, since the operator edits it by hand and a bare
@@ -83,6 +96,7 @@ pub(crate) async fn load(inv: &Invocation<'_>) -> Result<Registry> {
     // overlapping pair of prefixes are the same failure here: a bad file, and
     // nothing from it is served.
     Registry::from_json(&repr.bytes)
+        .map(|registry| (registry, repr.content_id()))
         .map_err(|e| Error::Endpoint(format!("name: {REGISTRY_IRI} is not a valid registry: {e}")))
 }
 

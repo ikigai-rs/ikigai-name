@@ -39,10 +39,10 @@
 //! minted, which is the one failure a permanence service must not have.
 
 use crate::registry::{ClaimError, Namespace, Registry, Strategy};
-use crate::{load, REGISTRY_IRI};
+use crate::{load_versioned, REGISTRY_IRI};
 use ikigai_core::{
-    is_deny_scope, ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation,
-    InvokeFuture, Iri, ReprType, Representation, Request, Result, Verb,
+    is_deny_scope, ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, ContentId, Description, Error,
+    Invocation, InvokeFuture, Iri, ReprType, Representation, Request, Result, Verb,
 };
 
 /// The capability permitting a *new* namespace to be claimed — the signup gate.
@@ -180,19 +180,23 @@ fn strategy_from_args(inv: &Invocation<'_>) -> Result<Strategy> {
     }
 }
 
-/// Write the registry back through the kernel.
-///
-/// ⚠ This is a read-modify-write with no compare-and-set, so two administrative
-/// writes racing can lose one. Acceptable while writes are rare and operator-
-/// driven; the fix is a validity-token precondition on the Sink (the kernel
-/// already mints validity tokens, and the generic PATCH design specifies exactly
-/// this), not a lock.
-async fn store(inv: &Invocation<'_>, registry: &Registry) -> Result<()> {
+/// Conditionally replace the registry through its backing store (see
+/// [`REGISTRY_IRI`]). The comparison belongs at the Sink, not in a second read
+/// here: a read followed by an unconditional write would still race. Propagate
+/// Conflict unchanged, and never retry an edit based on stale data.
+async fn store(inv: &Invocation<'_>, registry: &Registry, expected: ContentId) -> Result<()> {
     let iri = Iri::parse(REGISTRY_IRI).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
     let body =
         serde_json::to_vec_pretty(registry).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
-    inv.issue(Request::new(Verb::Sink, iri).with_arg("content", ArgRef::Inline(body)))
-        .await?;
+    inv.issue(
+        Request::new(Verb::Sink, iri)
+            .with_arg("content", ArgRef::Inline(body))
+            .with_arg(
+                "if-match",
+                ArgRef::Inline(expected.to_string().into_bytes()),
+            ),
+    )
+    .await?;
     Ok(())
 }
 
@@ -230,7 +234,7 @@ pub fn claim() -> AsyncFnEndpoint {
                 .unwrap_or_else(|_| admin_scope(&prefix));
             refuse_deny_owner(&owner)?;
 
-            let mut registry = load(inv).await?;
+            let (mut registry, token) = load_versioned(inv).await?;
             registry
                 .claim(Namespace {
                     prefix: prefix.clone(),
@@ -238,7 +242,7 @@ pub fn claim() -> AsyncFnEndpoint {
                     strategy,
                 })
                 .map_err(|e| claim_error(&prefix, e))?;
-            store(inv, &registry).await?;
+            store(inv, &registry, token).await?;
             Ok(ok(format!("claimed {prefix}\t{owner}\n")))
         })
     })
@@ -306,7 +310,7 @@ pub fn admin() -> AsyncFnEndpoint {
         Box::pin(async move {
             let prefix = prefix_arg(inv)?;
             require_admin(inv, &prefix)?;
-            let mut registry = load(inv).await?;
+            let (mut registry, token) = load_versioned(inv).await?;
             let entry = registry
                 .namespaces
                 .iter_mut()
@@ -330,7 +334,7 @@ pub fn admin() -> AsyncFnEndpoint {
                     format!("updated {prefix}\n")
                 }
             };
-            store(inv, &registry).await?;
+            store(inv, &registry, token).await?;
             Ok(ok(message))
         })
     })
@@ -408,7 +412,8 @@ mod tests {
     use crate::space;
     use futures::executor::block_on;
     use ikigai_core::{Capability, Endpoint, FnEndpoint, Kernel};
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier, Mutex};
 
     /// A registry source that is both readable and writable, standing in for
     /// the operator's file. The module never learns which it is.
@@ -423,14 +428,36 @@ mod tests {
             Registry::from_json(self.0.lock().unwrap().as_bytes()).expect("valid registry")
         }
         fn endpoint(&self) -> FnEndpoint {
+            self.endpoint_with_barrier(None)
+        }
+        fn endpoint_with_barrier(&self, barrier: Option<Arc<Barrier>>) -> FnEndpoint {
             let cell = self.0.clone();
+            let first_read = AtomicBool::new(true);
             FnEndpoint::new("registry-source", move |inv: &Invocation<'_>| {
                 if inv.request.verb == Verb::Sink {
                     let body = inv.inline_arg("content")?;
-                    *cell.lock().unwrap() = String::from_utf8_lossy(body).into_owned();
+                    let mut current = cell.lock().unwrap();
+                    let token = Representation::new(
+                        ReprType::new("application/json"),
+                        current.as_bytes().to_vec(),
+                    )
+                    .content_id()
+                    .to_string();
+                    let expected = inv.inline_str("if-match")?;
+                    if expected != token {
+                        return Err(Error::Conflict(format!(
+                            "name: {REGISTRY_IRI} changed; current token is {token}; read it again"
+                        )));
+                    }
+                    *current = String::from_utf8_lossy(body).into_owned();
                     return Ok(Representation::new(text_plain_utf8(), b"stored".to_vec()));
                 }
                 let json = cell.lock().unwrap().clone();
+                if let Some(barrier) = &barrier {
+                    if first_read.swap(false, Ordering::SeqCst) {
+                        barrier.wait();
+                    }
+                }
                 Ok(Representation::new(
                     ReprType::new("application/json"),
                     json.into_bytes(),
@@ -466,6 +493,122 @@ mod tests {
 
     fn claimant() -> Capability {
         Capability::scoped([CAP_CLAIM])
+    }
+
+    /// Independent kernels model writers that cannot coordinate in process.
+    /// Both Source calls snapshot the same bytes before either Sink can land.
+    #[test]
+    fn racing_registry_writers_refuse_the_stale_token() {
+        let claim_a = [
+            ("prefix", "alpha"),
+            ("strategy", "redirect"),
+            ("target", "https://alpha.example/"),
+        ];
+        let claim_b = [
+            ("prefix", "beta"),
+            ("strategy", "redirect"),
+            ("target", "https://beta.example/"),
+        ];
+        let update = [
+            ("prefix", "resmud"),
+            ("strategy", "redirect"),
+            ("target", "https://resmud.example/new"),
+        ];
+        let other_update = [
+            ("prefix", "resmud"),
+            ("strategy", "mirror"),
+            ("origin", "https://resmud.example/mirror"),
+        ];
+        let retire = [("prefix", "resmud"), ("reason", "superseded")];
+        for (left_verb, left_target, left_args, right_target, right_args) in [
+            (
+                Verb::Sink,
+                "urn:name:claim",
+                &claim_a[..],
+                "urn:name:claim",
+                &claim_b[..],
+            ),
+            (
+                Verb::Sink,
+                "urn:name:admin",
+                &update[..],
+                "urn:name:admin",
+                &other_update[..],
+            ),
+            (
+                Verb::Delete,
+                "urn:name:admin",
+                &retire[..],
+                "urn:name:admin",
+                &update[..],
+            ),
+            (
+                Verb::Sink,
+                "urn:name:claim",
+                &claim_a[..],
+                "urn:name:admin",
+                &update[..],
+            ),
+        ] {
+            let store = Store::new(ONE);
+            let barrier = Arc::new(Barrier::new(2));
+            let writer = || {
+                Kernel::new(Arc::new(space().bind(
+                    ikigai_core::Exact::new(REGISTRY_IRI),
+                    store.endpoint_with_barrier(Some(barrier.clone())),
+                )))
+            };
+            let left = writer();
+            let right = writer();
+            let (a, b) = std::thread::scope(|threads| {
+                let a = threads.spawn(|| {
+                    call(
+                        &left,
+                        left_verb,
+                        left_target,
+                        left_args,
+                        &Capability::root(),
+                    )
+                });
+                let b = threads.spawn(|| {
+                    call(
+                        &right,
+                        Verb::Sink,
+                        right_target,
+                        right_args,
+                        &Capability::root(),
+                    )
+                });
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert_eq!(
+                usize::from(a.is_ok()) + usize::from(b.is_ok()),
+                1,
+                "exactly one writer must land: {a:?}, {b:?}"
+            );
+            let (err, winner_args, loser_args) = match (a, b) {
+                (Err(err), Ok(_)) => (err, right_args, left_args),
+                (Ok(_), Err(err)) => (err, left_args, right_args),
+                _ => unreachable!("exactly one writer succeeded"),
+            };
+            let stored = store.0.lock().unwrap().clone();
+            assert!(
+                stored.contains(winner_args.last().unwrap().1),
+                "the winning edit survives: {stored}"
+            );
+            assert!(
+                !stored.contains(loser_args.last().unwrap().1),
+                "the stale edit writes nothing: {stored}"
+            );
+            let current =
+                Representation::new(ReprType::new("application/json"), stored.into_bytes())
+                    .content_id()
+                    .to_string();
+            assert!(
+                matches!(&err, Error::Conflict(message) if message.contains(&current)),
+                "stale writer must get Conflict naming {current}: {err:?}"
+            );
+        }
     }
 
     // --- claiming ----------------------------------------------------------

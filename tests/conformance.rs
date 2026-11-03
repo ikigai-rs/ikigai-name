@@ -162,8 +162,18 @@ impl Endpoint for RegistryStore {
     async fn invoke(&self, inv: &Invocation<'_>) -> CoreResult<Representation> {
         if inv.request.verb == Verb::Sink {
             let body = String::from_utf8_lossy(inv.inline_arg("content")?).into_owned();
+            let mut text = self.text.write().expect("registry lock");
+            let token =
+                Representation::new(ReprType::new("application/json"), text.as_bytes().to_vec())
+                    .content_id()
+                    .to_string();
+            if inv.inline_str("if-match")? != token {
+                return Err(Error::Conflict(format!(
+                    "name: {REGISTRY_IRI} changed; current token is {token}; read it again"
+                )));
+            }
             self.writes.lock().expect("write log").push(body.clone());
-            *self.text.write().expect("registry lock") = body;
+            *text = body;
             return Ok(Representation::new(
                 ReprType::new("text/plain"),
                 b"stored".to_vec(),
@@ -197,7 +207,12 @@ impl Endpoint for RegistryStore {
             )
             .action(
                 ActionSpec::new(Verb::Sink)
-                    .summary("replace the registry document")
+                    .summary("conditionally replace the registry document")
+                    .input(
+                        ArgSpec::new("if-match")
+                            .summary("the content ID of the Source representation being replaced")
+                            .class(XSD_STRING),
+                    )
                     .input(
                         ArgSpec::new("content")
                             .summary("the whole registry, as JSON")
