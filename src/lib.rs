@@ -21,6 +21,10 @@
 //! arbitrated when a request arrives (see [`registry`]). Two tenants therefore
 //! cannot answer for the same IRI, by construction rather than by policy.
 //!
+//! One deployment can also answer for several hosts, each with its own registry
+//! and documents. The host a request is for travels on its capability; see
+//! [`tenant`].
+//!
 //! ## Endpoints
 //!
 //! | IRI | verb | what |
@@ -36,6 +40,7 @@ pub mod docs;
 pub mod document;
 pub mod health;
 pub mod registry;
+pub mod tenant;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
 pub use docs::{docs, style};

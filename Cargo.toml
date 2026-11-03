@@ -63,6 +63,12 @@ name = "server_http"
 path = "tests/server_http.rs"
 required-features = ["server"]
 
+# The Host-keyed tenants, through the real binary, so the same feature applies.
+[[test]]
+name = "tenancy_http"
+path = "tests/tenancy_http.rs"
+required-features = ["server"]
+
 [dev-dependencies]
 futures = "0.3"
 # Walk every bound endpoint, including DATATYPES, FAILURES, BODIES and
