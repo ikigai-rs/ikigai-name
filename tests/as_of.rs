@@ -7,8 +7,8 @@
 
 use futures::executor::block_on;
 use ikigai_core::{
-    ArgRef, Capability, EndpointSpace, Error, Exact, FnEndpoint, Invocation, Iri, Kernel, ReprType,
-    Representation, Request, Result, Verb,
+    ArgRef, Capability, Description, EndpointSpace, Error, Exact, FnEndpoint, Invocation, Iri,
+    Kernel, ReprType, Representation, Request, Result, Verb,
 };
 use ikigai_name::history::SHOW_IRI;
 use ikigai_name::{repo_history, HISTORY_IRI, REGISTRY_IRI};
@@ -105,6 +105,7 @@ impl Repo {
             .bind(Exact::new("urn:name:document"), ikigai_name::document())
             .bind(Exact::new(HISTORY_IRI), repo_history(dir, "registry.json"))
             .bind(Exact::new(SHOW_IRI), stand_in_show(reads.clone()))
+            .bind(Exact::new("urn:test:to-json-ld"), to_json_ld())
             .bind(
                 Exact::new(REGISTRY_IRI),
                 current(self.root.join("registry.json"), "application/json"),
@@ -146,6 +147,17 @@ fn stand_in_show(reads: Arc<AtomicUsize>) -> FnEndpoint {
             output.stdout,
         ))
     })
+}
+
+/// A transreptor that passes its content on, cacheable as a real one would be.
+fn to_json_ld() -> FnEndpoint {
+    FnEndpoint::new("to-json-ld", |inv: &Invocation<'_>| {
+        let content = inv.inline_arg("content")?.to_vec();
+        Ok(Representation::new(ReprType::new("application/ld+json"), content).cacheable())
+    })
+    .with_description(
+        Description::new("to-json-ld").transreptor(["text/turtle"], ["application/ld+json"]),
+    )
 }
 
 /// The working tree: what a request with no `as-of` reads. Cacheable, so a cached
@@ -214,6 +226,83 @@ fn a_past_document_is_served_as_turtle() {
     )
     .expect("served");
     assert_eq!(repr.repr_type.media_type, "text/turtle");
+}
+
+/// A past read is typed from the file's name, so every type a file module gives a
+/// vocabulary has to come back, or `as=` works today and is refused for March.
+#[test]
+fn a_past_document_keeps_the_type_its_file_name_gives_it() {
+    let repo = Repo::new();
+    let types = [
+        ("ttl", "text/turtle"),
+        ("nt", "application/n-triples"),
+        ("nq", "application/n-quads"),
+        ("n3", "text/n3"),
+        ("trig", "application/trig"),
+        ("rdf", "application/rdf+xml"),
+        ("xml", "text/xml"),
+        ("json", "application/json"),
+        ("jsonld", "application/ld+json"),
+        ("txt", "text/plain"),
+        ("md", "text/markdown"),
+    ];
+    let namespaces: Vec<String> = types
+        .iter()
+        .map(|(extension, _)| {
+            repo.write(&format!("vocab/typed.{extension}"), "typed\n");
+            format!(
+                r#"{{"prefix":"{extension}","owner":"urn:cap:name:admin:{extension}",
+                "strategy":"hosted","source":"urn:file:vocab/typed.{extension}"}}"#
+            )
+        })
+        .collect();
+    let namespaces: Vec<&str> = namespaces.iter().map(String::as_str).collect();
+    repo.write("registry.json", &registry(&namespaces));
+    repo.commit("2026-06-01T12:00:00Z");
+
+    let (kernel, _) = repo.kernel();
+    for (extension, media) in types {
+        let repr = get(
+            &kernel,
+            "urn:name:document",
+            &[("path", extension), ("as-of", "2026-07-01"), ("as", media)],
+        )
+        .unwrap_or_else(|e| panic!("{extension}: {e:?}"));
+        assert_eq!(repr.repr_type.media_type, media, "{extension}");
+    }
+
+    // A name nothing recognizes stays what the read said, and is not served as Turtle.
+    repo.write("vocab/typed.bin", "typed\n");
+    let namespace = r#"{"prefix":"bin","owner":"urn:cap:name:admin:bin",
+        "strategy":"hosted","source":"urn:file:vocab/typed.bin"}"#;
+    repo.write("registry.json", &registry(&[namespace]));
+    repo.commit("2026-06-02T12:00:00Z");
+    let err = document(&kernel, "bin", "2026-07-01").unwrap_err();
+    assert!(
+        matches!(&err, Error::Endpoint(m) if m.contains("nothing converts application/octet-stream")),
+        "{err:?}"
+    );
+}
+
+/// A transreptor marks its own answer cacheable, which must not make a past answer
+/// so: the date's answer still comes from history every time.
+#[test]
+fn a_converted_past_answer_comes_from_history_too() {
+    let repo = Repo::new();
+    let (kernel, reads) = repo.kernel();
+    let args = [
+        ("path", "resmud/core"),
+        ("as-of", "2026-02-01"),
+        ("as", "application/ld+json"),
+    ];
+    let before = reads.load(Ordering::Relaxed);
+    for _ in 0..2 {
+        let repr = get(&kernel, "urn:name:document", &args).expect("served");
+        assert_eq!(repr.repr_type.media_type, "application/ld+json");
+        assert_eq!(text(&repr), "# version 1\n");
+    }
+    // The registry and the document, each read twice.
+    assert_eq!(reads.load(Ordering::Relaxed) - before, 4);
 }
 
 /// The tombstone is as dated as anything else: retired now, in force in March.

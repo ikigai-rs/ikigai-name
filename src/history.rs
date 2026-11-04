@@ -331,14 +331,23 @@ fn commit_at<'a>(entries: &'a [LogEntry], at: &AsOf) -> Result<Option<&'a str>> 
     Ok(None)
 }
 
-/// What the file is. Git records no media type, so this comes from the name, and
-/// a name it does not know keeps whatever type the read answered with.
+/// What the file is. Git records no media type, so this comes from the name, the
+/// same answers `ikigai-fs` 0.2.4 gives for these, so a document's type does not
+/// change with the date asked about. A name it does not know keeps whatever type the
+/// read answered with.
 fn media_type(path: &str, file: &Representation) -> ReprType {
     let known = match path.rsplit_once('.').map(|(_, extension)| extension) {
         Some("ttl") => Some("text/turtle"),
+        Some("nt") => Some("application/n-triples"),
+        Some("nq") => Some("application/n-quads"),
+        Some("n3") => Some("text/n3"),
+        Some("trig") => Some("application/trig"),
+        Some("rdf") => Some("application/rdf+xml"),
+        Some("xml") => Some("text/xml"),
         Some("json") => Some("application/json"),
         Some("jsonld") => Some("application/ld+json"),
-        Some("nt") => Some("application/n-triples"),
+        Some("txt") => Some("text/plain"),
+        Some("md") => Some("text/markdown"),
         _ => None,
     };
     known.map_or_else(|| file.repr_type.clone(), ReprType::new)

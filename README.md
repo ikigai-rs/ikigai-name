@@ -311,6 +311,9 @@ is refused, and Turtle is what a past read serves.
 `repo_history` chooses by `urn:repo:log`'s **author** date, the only one it
 reports, so a commit rebased or merged long after it was written counts from when
 it was written. It follows one file name, so a date before a rename finds nothing.
+Git records no media type, so a past document's type comes from its file name
+(`.ttl`, `.nt`, `.nq`, `.n3`, `.trig`, `.rdf`, `.xml`, `.json`, `.jsonld`, `.txt`,
+`.md`), and any other name answers whatever `urn:repo:show` typed it as.
 
 ## Endpoints
 
