@@ -4,7 +4,7 @@
 //! resolution rule can change without a rebuild, and because the registry is
 //! read back through the kernel it is golden-threaded (edit the file, the thread
 //! cuts, the next resolve is correct), diffable, and as-of resolvable like any
-//! other resource.
+//! other resource (see [`history`](crate::history)).
 //!
 //! ## Why the claim rule is the interesting part
 //!

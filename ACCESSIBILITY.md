@@ -27,7 +27,10 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   start `name:` and name the namespace or path they are about (`name: no namespace claims "x"`,
   `name: "x" is retired: <reason>`, `name: "x" overlaps the claimed namespace "y"`,
   `name: administering "x" needs <capability>`, `name: this server does not answer for "x"`,
-  `name: "x" is not a term of this host: it lives at <IRI>`).
+  `name: "x" is not a term of this host: it lives at <IRI>`). A refusal about the past names its
+  date in UTC (`name: urn:file:x did not exist as of 2026-03-31T23:59:59Z`, `name: this host keeps
+  no history, so it cannot answer as of <date>; leave out as-of for the current answer, or bind
+  urn:name:history-source to add it`).
 - **Plain-text and JSON answers**: `urn:name:resolve` answers a strategy and its source,
   separated by a tab (`hosted`, then `urn:file:…`); `claim` and `admin` answer one line
   (`claimed <prefix>`, `updated <prefix>`, `retired <prefix>`, with the owner or the reason after
@@ -108,6 +111,10 @@ vocabulary as written.
   page uses it for: the script as `text/javascript`, the stylesheet as `text/css`, each term's
   link and htmx fetch as the page with that term, and the theme form's submission.
   `tests/conformance.rs` (`errors_carry_no_registry_body`) pins that no error echoes the registry.
+- `tests/as_of.rs`, the unit tests in `src/document.rs` and
+  `as_of_is_refused_here_rather_than_answered_with_today` in `tests/server_http.rs` pin the words
+  and status of the `as-of` refusals, including that the page refuses it rather than showing the
+  current vocabulary.
 - **Checked once by hand in a browser and with axe, not in CI** (2026-11-01, ledger #2737): the
   standalone server's page in Chromium, with axe's WCAG 2.0, 2.1 and 2.2 A and AA rules under
   light, dark and `prefers-contrast: more`, for the term list, a term chosen through htmx, a
@@ -133,6 +140,9 @@ with people or assistive technology:
   whole comment.
 - The theme chooser sits between the `<header>` and the `<main>`, outside every landmark.
 - `urn:name:resolve`, `claim` and `admin` answer tab-separated fields with no labels.
+- The documentation page cannot show a vocabulary as of a date, so a person reading the past reads
+  Turtle. The refusal says so and names what to ask for instead.
+- A date in a refusal is always in UTC, whatever offset was asked with.
 - A refusal for a host that is not a tenant cannot say which host would work: it names the host it
   was given and no next step, because the list of tenants is not this refusal's to disclose.
 
@@ -160,3 +170,4 @@ you are comfortable sharing them. Anything security-sensitive goes through
 | 2026-10-31 | First version. |
 | 2026-11-01 | Terms are links that work without JavaScript, htmx swaps the region's contents, the theme chooser is a plain form, and the stylesheet and htmx are served by the standalone server (ledger #2737). Checked in a browser and with axe. |
 | 2026-11-03 | Tenants by host: the "Defined elsewhere" list, whole IRIs for references to another host, and the host refusals (ledger #3047). Not checked in a browser or with axe. |
+| 2026-11-03 | The `as-of` refusals (ledger #3049). The page itself is unchanged. |

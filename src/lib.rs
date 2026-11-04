@@ -32,6 +32,9 @@
 //! | `urn:name:registry` | Source | the parsed registry, as JSON |
 //! | `urn:name:resolve` | Source | how a path resolves, or an error naming why not |
 //! | `urn:name:health` | Source | what this deployment holds, and what it refuses |
+//!
+//! `urn:name:registry`, `urn:name:resolve` and `urn:name:document` also answer as
+//! of a date, from the vocabulary's history rather than any cache; see [`history`].
 
 #![deny(missing_docs)]
 
@@ -39,6 +42,7 @@ pub mod admin;
 pub mod docs;
 pub mod document;
 pub mod health;
+pub mod history;
 pub mod registry;
 pub mod tenant;
 
@@ -46,6 +50,8 @@ pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
 pub use docs::{docs, style};
 pub use document::{doc, document, DOC_TEMPLATE};
 pub use health::health;
+use history::{as_of_arg, as_of_input, load_as_of, when, AsOf};
+pub use history::{repo_history, HISTORY_IRI};
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, ContentId, Description, Error, Exact, Invocation, InvokeFuture, Iri,
     ReprType, Representation, Result, Verb,
@@ -125,10 +131,29 @@ fn path_arg(inv: &Invocation<'_>) -> Result<String> {
 pub(crate) fn resolve_path<'r>(
     registry: &'r Registry,
     path: &str,
+    at: Option<&AsOf>,
 ) -> Result<&'r registry::Namespace> {
     registry
         .lookup(path)
-        .ok_or_else(|| Error::NotFound(format!("name: no namespace claims {path:?}")))
+        .ok_or_else(|| Error::NotFound(format!("name: no namespace claims {path:?}{}", when(at))))
+}
+
+/// The registry a read face answers from: as of the date it was asked about, or
+/// the current one.
+async fn load_at(inv: &Invocation<'_>, at: Option<&AsOf>) -> Result<Registry> {
+    match at {
+        Some(at) => load_as_of(inv, at).await,
+        None => load(inv).await,
+    }
+}
+
+/// Cacheable only for the present: a past answer is read from history every time,
+/// because the cache is not an archive (see [`history`]).
+fn cacheable_unless_past(repr: Representation, at: Option<&AsOf>) -> Representation {
+    match at {
+        Some(_) => repr,
+        None => repr.cacheable(),
+    }
 }
 
 /// `urn:name:registry` — the registry as JSON.
@@ -140,10 +165,14 @@ pub(crate) fn resolve_path<'r>(
 pub fn registry_endpoint() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("registry", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
-            let registry = load(inv).await?;
+            let at = as_of_arg(inv)?;
+            let registry = load_at(inv, at.as_ref()).await?;
             let body = serde_json::to_vec_pretty(&registry)
                 .map_err(|e| Error::Endpoint(format!("name: {e}")))?;
-            Ok(Representation::new(ReprType::new(APPLICATION_JSON), body).cacheable())
+            Ok(cacheable_unless_past(
+                Representation::new(ReprType::new(APPLICATION_JSON), body),
+                at.as_ref(),
+            ))
         })
     })
     .with_description(
@@ -156,6 +185,7 @@ pub fn registry_endpoint() -> AsyncFnEndpoint {
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
+            .input(as_of_input())
             .output(APPLICATION_JSON),
     )
 }
@@ -165,8 +195,9 @@ pub fn resolve() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("resolve", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
             let path = path_arg(inv)?;
-            let registry = load(inv).await?;
-            let found = resolve_path(&registry, &path)?;
+            let at = as_of_arg(inv)?;
+            let registry = load_at(inv, at.as_ref()).await?;
+            let found = resolve_path(&registry, &path, at.as_ref())?;
             let answer = match &found.strategy {
                 Strategy::Hosted { source } => format!("hosted\t{source}"),
                 Strategy::Redirect { target } => format!("redirect\t{target}"),
@@ -177,19 +208,22 @@ pub fn resolve() -> AsyncFnEndpoint {
                 // the face maps it and NotFound carries the explanation.
                 Strategy::Retired { reason } => {
                     return Err(Error::NotFound(format!(
-                        "name: {:?} is retired: {reason}",
-                        found.prefix
+                        "name: {:?} is retired{}: {reason}",
+                        found.prefix,
+                        when(at.as_ref())
                     )))
                 }
             };
             // Pure in (registry, path); the kernel clamps to the registry's
             // own expiry, so a file-backed registry with a watcher caches and
             // one without does not.
-            Ok(Representation::new(
-                text_plain_utf8(),
-                format!("{}\t{answer}\n", found.prefix).into_bytes(),
-            )
-            .cacheable())
+            Ok(cacheable_unless_past(
+                Representation::new(
+                    text_plain_utf8(),
+                    format!("{}\t{answer}\n", found.prefix).into_bytes(),
+                ),
+                at.as_ref(),
+            ))
         })
     })
     .with_description(
@@ -206,6 +240,7 @@ pub fn resolve() -> AsyncFnEndpoint {
                     .summary("the curated path, e.g. resmud/core (piped content is the fallback)")
                     .class(XSD_STRING),
             )
+            .input(as_of_input())
             .output(TEXT_PLAIN_UTF8),
     )
 }

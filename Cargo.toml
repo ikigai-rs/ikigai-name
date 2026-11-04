@@ -76,3 +76,7 @@ futures = "0.3"
 ikigai-conformance = "0.12.0"
 # Match the server's real SPARQL engine for the conformance walk.
 ikigai-sparql = "0.3.1"
+# The real urn:repo:log behind as-of resolution, over a scratch repository. 0.3.x
+# because that is the line on core 0.2: 0.4.0 is on core 0.3, and ikigai-web has no
+# release on core 0.3 for the server to move with it.
+ikigai-repo = "0.3.2"

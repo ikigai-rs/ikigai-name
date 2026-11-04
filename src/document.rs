@@ -25,6 +25,7 @@
 //! `ETag` and answers `If-None-Match` — inventing a second one at this layer
 //! would give the same bytes two identities.
 
+use crate::history::{as_of_arg, as_of_input, load_as_of, no_page_as_of, read_as_of, when};
 use crate::registry::Strategy;
 use crate::{load, resolve_path};
 use ikigai_core::{
@@ -119,8 +120,20 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
             .map(|t| bare(t).to_string())
             .unwrap_or_else(|_| CANONICAL.to_string());
 
+        let at = as_of_arg(inv)?;
+        if at.is_some() && bare(&wanted) == HTML {
+            return Err(no_page_as_of());
+        }
+
+        // The current registry even for a past answer: its limits are what this
+        // deployment holds itself to today, whatever a past file allowed. Which
+        // namespace meant what comes from the registry as it stood then.
         let registry = load(inv).await?;
-        let found = resolve_path(&registry, &path)?;
+        let past = match &at {
+            Some(at) => Some(load_as_of(inv, at).await?),
+            None => None,
+        };
+        let found = resolve_path(past.as_ref().unwrap_or(&registry), &path, at.as_ref())?;
         let prefix = found.prefix.clone();
         let strategy = found.strategy.clone();
 
@@ -136,7 +149,8 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
             }
             Strategy::Retired { reason } => {
                 return Err(Error::NotFound(format!(
-                    "name: {prefix:?} is retired: {reason}"
+                    "name: {prefix:?} is retired{}: {reason}",
+                    when(at.as_ref())
                 )))
             }
         };
@@ -165,7 +179,10 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
 
         let iri = Iri::parse(&source)
             .map_err(|e| Error::Endpoint(format!("name: bad source {source:?}: {e}")))?;
-        let stored = inv.source(&iri).await?;
+        let stored = match &at {
+            Some(at) => read_as_of(inv, &source, at).await?,
+            None => inv.source(&iri).await?,
+        };
 
         // The ceiling is checked on the way OUT, not on the way in: by the
         // time it is here the bytes are already resident, so this bounds
@@ -258,6 +275,7 @@ fn described(from: PathFrom) -> Description {
                         .optional()
                         .class(XSD_STRING),
                 )
+                .input(as_of_input())
                 .input(
                     ArgSpec::new("theme")
                         .summary("passed through to the HTML face")
@@ -465,6 +483,120 @@ mod tests {
     fn a_document_under_the_ceiling_is_served() {
         let repr = get(&kernel(false), &[("path", "resmud/core")]).expect("under the ceiling");
         assert!(!repr.bytes.is_empty());
+    }
+
+    /// A kernel whose history answers `past_registry` and `# past` for anything,
+    /// with this registry as its present.
+    fn kernel_with_history(present: &'static str, past_registry: &'static str) -> Kernel {
+        let history = FnEndpoint::new("history", move |inv: &Invocation<'_>| {
+            let body = if inv.inline_str("source")? == crate::REGISTRY_IRI {
+                past_registry
+            } else {
+                "# past\n"
+            };
+            Ok(Representation::new(
+                ReprType::new(CANONICAL),
+                body.as_bytes().to_vec(),
+            ))
+        });
+        Kernel::new(Arc::new(
+            space()
+                .bind(Exact::new(crate::HISTORY_IRI), history)
+                .bind(Exact::new("urn:test:vocab"), serving(CANONICAL, VOCAB))
+                .bind(
+                    Exact::new("urn:name:registry-source"),
+                    serving("application/json", present),
+                ),
+        ))
+    }
+
+    /// With no history bound, a question about the past is refused. Today's
+    /// document would look like an answer to it.
+    #[test]
+    fn as_of_with_no_history_bound_is_refused_and_says_what_would_add_it() {
+        let err = get(
+            &kernel(false),
+            &[("path", "resmud/core"), ("as-of", "2026-03-31")],
+        )
+        .expect_err("no history");
+        match &err {
+            Error::Unsupported { verb: None, detail } => {
+                assert!(detail.contains("as of 2026-03-31T23:59:59Z"), "{detail}");
+                assert!(detail.contains(crate::HISTORY_IRI), "{detail}");
+            }
+            other => panic!("want Unsupported, got: {other:?}"),
+        }
+    }
+
+    /// Anything other than a readable date is refused rather than taken as "no
+    /// date", which would answer with today's document.
+    #[test]
+    fn an_unreadable_as_of_is_refused_by_name() {
+        let request = |value: &[u8]| {
+            Request::new(Verb::Source, Iri::parse("urn:name:document").unwrap())
+                .with_arg("path", ArgRef::Inline(b"resmud/core".to_vec()))
+                .with_arg("as-of", ArgRef::Inline(value.to_vec()))
+        };
+        for value in [&b"March"[..], b"", b"  ", b"\xff\xfe"] {
+            let err = block_on(kernel(false).issue(request(value), &Capability::root()))
+                .expect_err("not a date");
+            assert!(
+                matches!(&err, Error::InvalidArgument { name, .. } if name == "as-of"),
+                "{value:?}: {err:?}"
+            );
+        }
+    }
+
+    /// The page reads the current vocabulary, so neither way of asking for it may
+    /// present that as the past.
+    #[test]
+    fn the_documentation_page_refuses_as_of() {
+        let past = kernel_with_history(REGISTRY, REGISTRY);
+        let err = get(
+            &past,
+            &[
+                ("path", "resmud/core"),
+                ("as", "text/html"),
+                ("as-of", "2026-03-31"),
+            ],
+        )
+        .expect_err("no past page");
+        assert!(
+            matches!(&err, Error::Unsupported { detail, .. } if detail.contains("documentation page")),
+            "{err:?}"
+        );
+
+        let direct = Request::new(Verb::Source, Iri::parse("urn:name:docs").unwrap())
+            .with_arg("prefix", ArgRef::Inline(b"resmud".to_vec()))
+            .with_arg("as-of", ArgRef::Inline(b"2026-03-31".to_vec()));
+        let err = block_on(past.issue(direct, &Capability::root())).expect_err("no past page");
+        assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    }
+
+    /// A past registry says which namespace meant what. It does not get to raise
+    /// the ceiling this deployment holds itself to today.
+    #[test]
+    fn the_ceiling_in_force_is_todays_whatever_the_past_allowed() {
+        const TINY: &str = r#"{"namespaces":[],"limits":{"max_document_bytes":3}}"#;
+        let err = get(
+            &kernel_with_history(TINY, REGISTRY),
+            &[("path", "resmud/core"), ("as-of", "2026-03-31")],
+        )
+        .expect_err("over today's ceiling");
+        assert!(err.to_string().contains("max_document_bytes"), "{err}");
+    }
+
+    /// The namespace comes from the past registry, so one claimed then and absent
+    /// now still answers.
+    #[test]
+    fn a_namespace_comes_from_the_registry_as_it_stood() {
+        const EMPTY: &str = r#"{"namespaces":[]}"#;
+        let repr = get(
+            &kernel_with_history(EMPTY, REGISTRY),
+            &[("path", "resmud/core"), ("as-of", "2026-03-31")],
+        )
+        .expect("claimed then");
+        assert_eq!(repr.bytes, b"# past\n");
     }
 
     #[test]
