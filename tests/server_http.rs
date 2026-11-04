@@ -54,6 +54,22 @@ fn scratch_root() -> PathBuf {
     ))
 }
 
+/// Whether an HTTP server answers at `addr`. A connection alone proves nothing: the
+/// port just released stays open in any child another test has forked but not yet
+/// exec'd, which accepts the connection and then closes it, before this server listens.
+fn answers_http(addr: SocketAddr) -> bool {
+    let Ok(mut stream) = TcpStream::connect(addr) else {
+        return false;
+    };
+    let probe = "OPTIONS /-/style HTTP/1.1\r\nHost: probe.example\r\nConnection: close\r\n\r\n";
+    let timeout = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut answer = [0u8; 9];
+    timeout.is_ok()
+        && stream.write_all(probe.as_bytes()).is_ok()
+        && stream.read_exact(&mut answer).is_ok()
+        && answer == *b"HTTP/1.1 "
+}
+
 /// A running server over a scratch root, killed and cleaned up on drop.
 struct Server {
     child: Child,
@@ -87,7 +103,7 @@ impl Server {
         let mut server = Server { child, addr, root };
 
         let deadline = Instant::now() + Duration::from_secs(20);
-        while TcpStream::connect(server.addr).is_err() {
+        while !answers_http(server.addr) {
             if let Some(status) = server.child.try_wait().expect("poll the server") {
                 panic!("ikigai-name-server exited before listening: {status}");
             }
