@@ -24,6 +24,8 @@
 //! at the first entry the claim rule would have refused. There is one rule,
 //! not a load rule and a claim rule that must be kept in step.
 
+use crate::rules::{status_from_json, status_refusal};
+pub use crate::rules::{RedirectStatus, Rule};
 use serde::{Deserialize, Serialize};
 
 /// How a claimed namespace produces its answer.
@@ -38,10 +40,17 @@ pub enum Strategy {
         /// The resource the documents are read from.
         source: String,
     },
-    /// The owner serves it themselves; we answer with a redirect to `target`.
+    /// The owner serves it themselves; we answer with a redirect to `target`, or
+    /// to where the first matching rule says.
     Redirect {
-        /// Where the owner serves it.
+        /// Where the owner serves it, when no rule matches.
         target: String,
+        /// The status a redirect answers with, unless a rule says otherwise.
+        #[serde(default)]
+        status: RedirectStatus,
+        /// How to reshape a path, in order: the first that matches answers.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        rules: Vec<Rule>,
     },
     /// A cached copy is served, but `origin` remains the source of truth, so
     /// the namespace survives its origin going dark.
@@ -73,6 +82,45 @@ pub struct Namespace {
     /// How this namespace produces its answer.
     #[serde(flatten)]
     pub strategy: Strategy,
+}
+
+/// Where a `redirect` namespace sends one path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redirection<'a> {
+    /// The URL, with any captures substituted.
+    pub target: String,
+    /// The status it answers with: the rule's, or the namespace's.
+    pub status: RedirectStatus,
+    /// The `match` of the rule that answered, or `None` for the namespace's target.
+    pub rule: Option<&'a str>,
+}
+
+impl Namespace {
+    /// Where this namespace sends `path`, or `None` if it is not a `redirect`.
+    pub fn redirection(&self, path: &str) -> Option<Redirection<'_>> {
+        let Strategy::Redirect {
+            target,
+            status,
+            rules,
+        } = &self.strategy
+        else {
+            return None;
+        };
+        let wanted = segments(path);
+        let below = wanted.get(segments(&self.prefix).len()..).unwrap_or(&[]);
+        let answered = rules.iter().find_map(|rule| {
+            rule.rewrite(below).map(|target| Redirection {
+                target,
+                status: rule.status.unwrap_or(*status),
+                rule: Some(rule.pattern.as_str()),
+            })
+        });
+        Some(answered.unwrap_or_else(|| Redirection {
+            target: target.clone(),
+            status: *status,
+            rule: None,
+        }))
+    }
 }
 
 /// What this deployment refuses to do, whatever a namespace asks for.
@@ -126,6 +174,19 @@ pub enum ClaimError {
     /// contains it, or they are equal. Carries the existing prefix so the
     /// refusal can name it.
     Overlaps(String),
+    /// A status that is not 301, 302, 303, 307 or 308. Carries the sentence naming it.
+    BadStatus(String),
+    /// `rules` was something other than a list. Carries the value as written.
+    NotARuleList(String),
+    /// A rewrite rule the registry cannot hold.
+    BadRule {
+        /// Its place in the namespace's `rules`, counting from 1.
+        rule: usize,
+        /// Its `match` as written, empty if it has none.
+        pattern: String,
+        /// A clause saying what is wrong with it.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for ClaimError {
@@ -135,6 +196,15 @@ impl std::fmt::Display for ClaimError {
             ClaimError::Overlaps(existing) => {
                 write!(f, "overlaps the claimed namespace {existing:?}")
             }
+            ClaimError::BadStatus(reason) => f.write_str(reason),
+            ClaimError::NotARuleList(value) => {
+                write!(f, "its rules must be a list, and {value} is not one")
+            }
+            ClaimError::BadRule {
+                rule,
+                pattern,
+                reason,
+            } => write!(f, "in rule {rule} ({pattern:?}), {reason}"),
         }
     }
 }
@@ -203,6 +273,63 @@ impl From<serde_json::Error> for LoadError {
     }
 }
 
+impl Strategy {
+    /// Whether a registry may hold this strategy: every rule of a `redirect` parses,
+    /// and no capture it uses is undefined.
+    pub fn check(&self) -> Result<(), ClaimError> {
+        let Strategy::Redirect { rules, .. } = self else {
+            return Ok(());
+        };
+        for (place, rule) in rules.iter().enumerate() {
+            rule.check().map_err(|reason| ClaimError::BadRule {
+                rule: place + 1,
+                pattern: rule.pattern.clone(),
+                reason,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// The refusal naming the namespace whose status or rule stopped a file parsing, if
+/// that is what stopped it. A parser's message could only name a position in the file.
+fn refuse_by_name(raw: &serde_json::Value) -> Option<LoadError> {
+    raw.get("namespaces")?.as_array()?.iter().find_map(|entry| {
+        let prefix = entry.get("prefix")?.as_str()?;
+        if entry.get("strategy")?.as_str()? != "redirect" {
+            return None;
+        }
+        redirect_refusal(entry).map(|error| LoadError::Refused {
+            prefix: prefix.to_string(),
+            error,
+        })
+    })
+}
+
+fn redirect_refusal(entry: &serde_json::Value) -> Option<ClaimError> {
+    if let Some(status) = entry.get("status") {
+        if status_from_json(status).is_none() {
+            return Some(ClaimError::BadStatus(status_refusal(status)));
+        }
+    }
+    let rules = entry.get("rules")?;
+    let Some(rules) = rules.as_array() else {
+        return Some(ClaimError::NotARuleList(rules.to_string()));
+    };
+    rules.iter().enumerate().find_map(|(place, rule)| {
+        let reason = serde_json::from_value::<Rule>(rule.clone()).err()?;
+        Some(ClaimError::BadRule {
+            rule: place + 1,
+            pattern: rule
+                .get("match")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            reason: reason.to_string(),
+        })
+    })
+}
+
 impl Registry {
     /// Parse a registry from its JSON representation, refusing the whole file
     /// if any two entries overlap.
@@ -215,8 +342,17 @@ impl Registry {
     /// error of the same shape as malformed JSON, and a partially-served one
     /// would arbitrate by file order, which is the thing this module exists
     /// not to do.
+    ///
+    /// A status or a rule that is wrong is refused the same way, naming the
+    /// namespace and the rule rather than a position in the file.
     pub fn from_json(bytes: &[u8]) -> Result<Registry, LoadError> {
-        let parsed: Registry = serde_json::from_slice(bytes)?;
+        let parsed: Registry = serde_json::from_slice(bytes).map_err(|e| {
+            // Only a file already refused pays for reading it twice.
+            serde_json::from_slice(bytes)
+                .ok()
+                .and_then(|raw| refuse_by_name(&raw))
+                .unwrap_or(LoadError::Json(e))
+        })?;
         let mut registry = Registry {
             namespaces: Vec::with_capacity(parsed.namespaces.len()),
             limits: parsed.limits,
@@ -262,8 +398,11 @@ impl Registry {
     }
 
     /// Claim `prefix`, or refuse with the reason.
+    ///
+    /// The strategy is checked here too, so a file and a claim are held to one rule.
     pub fn claim(&mut self, namespace: Namespace) -> Result<(), ClaimError> {
         self.may_claim(&namespace.prefix)?;
+        namespace.strategy.check()?;
         self.namespaces.push(namespace);
         Ok(())
     }
@@ -415,6 +554,12 @@ mod tests {
                     owner: "urn:cap:name:admin:acme".into(),
                     strategy: Strategy::Redirect {
                         target: "https://acme.example/ns".into(),
+                        status: RedirectStatus::default(),
+                        rules: vec![Rule {
+                            pattern: "old/{x}".into(),
+                            target: "https://acme.example/new/{x}".into(),
+                            status: RedirectStatus::new(301),
+                        }],
                     },
                 },
             ],
@@ -563,6 +708,263 @@ mod tests {
                 "loading [{first:?}, {second:?}] must agree with claiming {second:?} over {first:?}"
             );
         }
+    }
+
+    fn redirect_with(fields: &str) -> Vec<u8> {
+        format!(
+            r#"{{"namespaces":[
+              {{"prefix":"fine","owner":"o","strategy":"hosted","source":"urn:file:x"}},
+              {{"prefix":"acme","owner":"o","strategy":"redirect",
+                "target":"https://acme.example/ns"{fields}}}
+            ]}}"#
+        )
+        .into_bytes()
+    }
+
+    fn redirect_status(fields: &str) -> RedirectStatus {
+        match &Registry::from_json(&redirect_with(fields))
+            .expect("loads")
+            .namespaces[1]
+            .strategy
+        {
+            Strategy::Redirect { status, .. } => *status,
+            other => panic!("not a redirect: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_status_loads_and_the_default_is_302() {
+        for code in [301, 302, 303, 307, 308] {
+            assert_eq!(
+                redirect_status(&format!(r#","status":{code}"#)).code(),
+                code
+            );
+        }
+        assert_eq!(redirect_status("").code(), 302);
+    }
+
+    /// Whatever the JSON holds where a status should be, the whole file is refused
+    /// by a sentence naming the namespace, never a position in the file.
+    #[test]
+    fn a_bad_status_refuses_the_whole_file_naming_the_namespace() {
+        for bad in [
+            "300", "304", "404", "200", "0", "99999", "-1", "301.5", "\"301\"", "null", "true",
+            "[301]",
+        ] {
+            let err =
+                Registry::from_json(&redirect_with(&format!(r#","status":{bad}"#))).expect_err(bad);
+            assert!(
+                matches!(&err, LoadError::Refused { prefix, error: ClaimError::BadStatus(_) }
+                    if prefix == "acme"),
+                "{bad}: {err:?}"
+            );
+            let message = err.to_string();
+            assert!(
+                message.contains("\"acme\"")
+                    && message.contains(bad)
+                    && message.contains("301, 302, 303, 307 or 308"),
+                "{bad}: {message}"
+            );
+        }
+    }
+
+    /// A rule's status is held to the same list, and the refusal names the rule too.
+    #[test]
+    fn a_bad_rule_refuses_the_whole_file_naming_the_namespace_and_the_rule() {
+        let good = r#"{"match":"ok/{a}","target":"https://acme.example/{a}"}"#;
+        for (bad, pattern, want) in [
+            // Stops the parser.
+            (
+                r#"{"match":"old/{x}","target":"https://n.example/{x}","status":404}"#,
+                "old/{x}",
+                "its status 404",
+            ),
+            (r#"{"match":"old/{x}"}"#, "old/{x}", "`target`"),
+            (r#"{"target":"https://n.example/"}"#, "", "`match`"),
+            (
+                r#"{"match":"old","target":"https://n.example/","statuss":301}"#,
+                "old",
+                "`statuss`",
+            ),
+            (r#""old""#, "", "expected"),
+            // Stops the claim.
+            (
+                r#"{"match":"old/{x}","target":"https://n.example/{y}"}"#,
+                "old/{x}",
+                "uses {y}",
+            ),
+            (
+                r#"{"match":"old/{x}/{x}","target":"https://n.example/{x}"}"#,
+                "old/{x}/{x}",
+                "twice",
+            ),
+            (
+                r#"{"match":"old/{x","target":"https://n.example/"}"#,
+                "old/{x",
+                "whole segment",
+            ),
+            (
+                r#"{"match":"old/{x}","target":"https://{x}/"}"#,
+                "old/{x}",
+                "inside the host",
+            ),
+        ] {
+            let json = redirect_with(&format!(r#","rules":[{good},{bad}]"#));
+            let err = Registry::from_json(&json).expect_err(bad);
+            match &err {
+                LoadError::Refused {
+                    prefix,
+                    error:
+                        ClaimError::BadRule {
+                            rule,
+                            pattern: named,
+                            ..
+                        },
+                } => {
+                    assert_eq!(prefix, "acme", "{bad}");
+                    assert_eq!(*rule, 2, "{bad}");
+                    assert_eq!(named, pattern, "{bad}");
+                }
+                other => panic!("{bad}: want a typed BadRule, got: {other:?}"),
+            }
+            let message = err.to_string();
+            assert!(
+                message.contains("\"acme\"")
+                    && message.contains("rule 2")
+                    && message.contains(want),
+                "{bad}: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn rules_that_are_not_a_list_refuse_the_file() {
+        let err = Registry::from_json(&redirect_with(r#","rules":{"match":"a"}"#))
+            .expect_err("not a list");
+        assert!(
+            matches!(&err, LoadError::Refused { prefix, error: ClaimError::NotARuleList(_) }
+                if prefix == "acme"),
+            "{err:?}"
+        );
+    }
+
+    /// A shape nothing here can name stays the parser's error.
+    #[test]
+    fn a_file_wrong_some_other_way_is_still_a_json_error() {
+        for json in [
+            &br#"{"namespaces":[{"prefix":"a","strategy":"redirect","target":"t"}]}"#[..],
+            br#"{"namespaces":[{"prefix":"a","owner":"o","strategy":"nonsense"}]}"#,
+            br#"{"namespaces":"none"}"#,
+        ] {
+            assert!(matches!(Registry::from_json(json), Err(LoadError::Json(_))));
+        }
+    }
+
+    /// One rule, for a claim as for a file.
+    #[test]
+    fn a_claim_is_held_to_the_rules_a_file_is() {
+        let mut reg = Registry::default();
+        let err = reg
+            .claim(Namespace {
+                prefix: "acme".into(),
+                owner: "o".into(),
+                strategy: Strategy::Redirect {
+                    target: "https://acme.example/".into(),
+                    status: RedirectStatus::default(),
+                    rules: vec![Rule {
+                        pattern: "{x}".into(),
+                        target: "https://{x}/".into(),
+                        status: None,
+                    }],
+                },
+            })
+            .expect_err("a capture in the host");
+        assert!(
+            matches!(err, ClaimError::BadRule { rule: 1, .. }),
+            "{err:?}"
+        );
+        assert!(reg.namespaces.is_empty());
+    }
+
+    fn acme_with_rules() -> Namespace {
+        let status = |code| RedirectStatus::new(code);
+        let rule = |pattern: &str, target: &str, status| Rule {
+            pattern: pattern.into(),
+            target: target.into(),
+            status,
+        };
+        Namespace {
+            prefix: "acme/vocab".into(),
+            owner: "o".into(),
+            strategy: Strategy::Redirect {
+                target: "https://acme.example/ns".into(),
+                status: status(307).expect("a status"),
+                rules: vec![
+                    rule("old/{x}", "https://one.example/{x}", status(301)),
+                    rule("old/{y}", "https://never.example/{y}", None),
+                    rule("old/{x}/{y}", "https://two.example/{y}/{x}", None),
+                    rule("docs/{rest*}", "https://three.example/{rest}", status(308)),
+                ],
+            },
+        }
+    }
+
+    /// Against each path: the target, the status and the rule named.
+    #[test]
+    fn the_first_match_answers_and_the_namespace_target_is_the_fallback() {
+        let namespace = acme_with_rules();
+        for (path, target, status, rule) in [
+            // The second rule has the same shape and is never reached.
+            (
+                "acme/vocab/old/a",
+                "https://one.example/a",
+                301,
+                Some("old/{x}"),
+            ),
+            (
+                "acme/vocab/old/a/b",
+                "https://two.example/b/a",
+                307,
+                Some("old/{x}/{y}"),
+            ),
+            (
+                "acme/vocab/docs/a/b/c",
+                "https://three.example/a/b/c",
+                308,
+                Some("docs/{rest*}"),
+            ),
+            // However it was spelled, as for a prefix.
+            (
+                "/acme//vocab/old/a/",
+                "https://one.example/a",
+                301,
+                Some("old/{x}"),
+            ),
+            // No rule matches: the namespace's own target and status.
+            ("acme/vocab", "https://acme.example/ns", 307, None),
+            ("acme/vocab/other", "https://acme.example/ns", 307, None),
+            ("acme/vocab/docs", "https://acme.example/ns", 307, None),
+            // A dot segment matches no capture, so it falls through too.
+            ("acme/vocab/old/..", "https://acme.example/ns", 307, None),
+        ] {
+            let answer = namespace.redirection(path).expect("a redirect");
+            assert_eq!(answer.target, target, "{path}");
+            assert_eq!(answer.status.code(), status, "{path}");
+            assert_eq!(answer.rule, rule, "{path}");
+        }
+    }
+
+    #[test]
+    fn only_a_redirect_has_a_redirection() {
+        assert_eq!(hosted("acme").redirection("acme/x"), None);
+    }
+
+    /// A match is relative to the prefix, so moving a namespace leaves its rules alone.
+    #[test]
+    fn a_match_does_not_repeat_the_prefix() {
+        let namespace = acme_with_rules();
+        let answer = namespace.redirection("acme/vocab/acme/vocab/old/a");
+        assert_eq!(answer.expect("a redirect").rule, None);
     }
 
     /// The other half of "refuse the whole file": a registry that does load

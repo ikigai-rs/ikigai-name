@@ -12,7 +12,7 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-name/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-name/security/advisories/new) |
-| Last reviewed | 2026-11-04 |
+| Last reviewed | 2026-11-05 |
 
 ## What it emits that people read
 
@@ -30,9 +30,14 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   `name: "x" is not a term of this host: it lives at <IRI>`). A refusal about the past names its
   date in UTC (`name: urn:file:x did not exist as of 2026-03-31T23:59:59Z`, `name: this host keeps
   no history, so it cannot answer as of <date>; leave out as-of for the current answer, or bind
-  urn:name:history-source to add it`).
+  urn:name:history-source to add it`). A registry refused for a redirect's status or rule names
+  the namespace, and the rule by its place and its match (`the namespace "x" cannot be claimed:
+  its status 404 is not one of 301, 302, 303, 307 or 308`, `the namespace "x" cannot be claimed:
+  in rule 2 ("old/{y}"), its target uses {z}, which its match does not capture`).
 - **Plain-text and JSON answers**: `urn:name:resolve` answers a strategy and its source,
-  separated by a tab (`hosted`, then `urn:file:…`); `claim` and `admin` answer one line
+  separated by a tab (`hosted`, then `urn:file:…`), and for a redirect its target, its status and
+  the match of the rule that answered, if one did (`redirect`, `https://…`, `302`, `old/{x}`);
+  `claim` and `admin` answer one line
   (`claimed <prefix>`, `updated <prefix>`, `retired <prefix>`, with the owner or the reason after
   a tab); `registry` and `health` answer JSON.
 - **The active-name counts** (`src/stat.rs`): a count answers a number and a newline (`3`); a
@@ -91,6 +96,10 @@ vocabulary as written.
 - **Errors are sentences that name their input**, and where this module can know the next step
   they say it (`raise limits.max_document_bytes in the registry`, `bind a transreptor for … to add
   it`). No error echoes the registry's body.
+- **A rule is named as its author wrote it**: by its place in the list and its `match`, in a
+  refusal, and by its `match` in an answer, since the first rule of any shape is the one that
+  answers. A rule's text holds no tab or newline, or the registry is refused, so an answer stays
+  one line of the same fields.
 - **No color in the terminal**: the server writes plain lines.
 - **An empty report says so**: a report with no months is a sentence, never an empty answer, which
   would read as a failure. A count of nothing is `0`.
@@ -128,6 +137,11 @@ vocabulary as written.
   `as_of_is_refused_here_rather_than_answered_with_today` in `tests/server_http.rs` pin the words
   and status of the `as-of` refusals, including that the page refuses it rather than showing the
   current vocabulary.
+- `src/rules.rs`, `src/registry.rs` and `src/lib.rs` pin the words of each refusal of a status or
+  a rule (`every_bad_rule_is_refused_with_its_reason`,
+  `a_bad_status_refuses_the_whole_file_naming_the_namespace`,
+  `a_bad_rule_refuses_the_whole_file_naming_the_namespace_and_the_rule`) and the fields of a
+  redirect's answer (`resolve_names_the_status_and_the_rule_that_answered`).
 - `tests/active_names.rs` pins the words of a count, a report, an empty report, a flush and their
   refusals (`the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`,
   `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`), and `tests/active_names_http.rs`
@@ -157,7 +171,12 @@ with people or assistive technology:
   whole comment.
 - The theme chooser sits between the `<header>` and the `<main>`, outside every landmark.
 - `urn:name:resolve`, `claim` and `admin` answer tab-separated fields with no labels, and so does a
-  namespace's report.
+  namespace's report. A redirect's answer has four fields, or five when a rule answered, so a
+  person reads the fifth as the rule only by knowing that.
+- A percent-encoded target is hard to read aloud or by eye, and a captured `%2F` reads as `%252F`.
+  That is what keeps it from being a separator, and it is the URL as a client must use it.
+- A refusal of a rule that is the wrong shape (a missing or misspelled field, say) ends in the JSON
+  parser's words (``missing field `target` ``), after naming the namespace and the rule.
 - A count at its ceiling of a million names is a floor, and neither the number nor the report says
   so. A count short of names a full buffer dropped does not say so either: only the next flush does.
 - The standalone server does not serve the counts. Someone reading them there reads JSON files.
@@ -193,3 +212,4 @@ you are comfortable sharing them. Anything security-sensitive goes through
 | 2026-11-03 | Tenants by host: the "Defined elsewhere" list, whole IRIs for references to another host, and the host refusals (ledger #3047). Not checked in a browser or with axe. |
 | 2026-11-03 | The `as-of` refusals (ledger #3049). The page itself is unchanged. |
 | 2026-11-04 | The active-name counts, report and flush, and the server's `--count-names` lines (ledger #3073). Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
+| 2026-11-05 | A redirect's status and rewrite rules (ledger #3077): more fields in `urn:name:resolve`'s answer, and the refusals of a status or a rule. Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |

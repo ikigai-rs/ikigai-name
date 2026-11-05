@@ -48,6 +48,7 @@ pub mod document;
 pub mod health;
 pub mod history;
 pub mod registry;
+pub mod rules;
 pub mod stat;
 pub mod tenant;
 
@@ -61,7 +62,9 @@ use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, ContentId, Description, Error, Exact, Invocation, InvokeFuture, Iri,
     ReprType, Representation, Result, UriTemplate, Verb,
 };
-pub use registry::{ClaimError, LoadError, Namespace, Registry, Strategy};
+pub use registry::{
+    ClaimError, LoadError, Namespace, RedirectStatus, Redirection, Registry, Rule, Strategy,
+};
 use stat::Seen;
 pub use stat::{CAP_FLUSH, FLUSH_IRI, SEEN_TEMPLATE};
 use std::sync::Arc;
@@ -216,7 +219,16 @@ fn resolve_counted_by(seen: Option<Arc<Seen>>) -> AsyncFnEndpoint {
             let found = resolve_path(&registry, &path, at.as_ref())?;
             let answer = match &found.strategy {
                 Strategy::Hosted { source } => format!("hosted\t{source}"),
-                Strategy::Redirect { target } => format!("redirect\t{target}"),
+                Strategy::Redirect { .. } => {
+                    let found = found.redirection(&path).ok_or_else(|| {
+                        Error::Endpoint("name: a redirect namespace named no target".into())
+                    })?;
+                    let answer = format!("redirect\t{}\t{}", found.target, found.status);
+                    match found.rule {
+                        Some(rule) => format!("{answer}\t{rule}"),
+                        None => answer,
+                    }
+                }
                 Strategy::Mirror { origin } => format!("mirror\t{origin}"),
                 // Retired is an ANSWER, not a miss: the namespace was real, and
                 // saying so is more useful than pretending it never existed.
@@ -255,7 +267,9 @@ fn resolve_counted_by(seen: Option<Arc<Seen>>) -> AsyncFnEndpoint {
             .title("Resolve a curated path")
             .summary(
                 "Reports the namespace claiming this path and how it answers — hosted, \
-                 redirect or mirror — or an error naming the path if no namespace claims it.",
+                 redirect or mirror — or an error naming the path if no namespace claims it. A \
+                 redirect also reports its status, and the match of the rule that answered, if \
+                 one did.",
             )
             .verb(Verb::Source)
             .verb(Verb::Meta)
@@ -368,7 +382,75 @@ mod tests {
     #[test]
     fn a_redirected_namespace_resolves_to_its_target() {
         let out = resolve_path(&kernel_with(REGISTRY_JSON), "acme/thing").expect("resolves");
-        assert_eq!(out, "acme\tredirect\thttps://acme.example/ns\n");
+        assert_eq!(out, "acme\tredirect\thttps://acme.example/ns\t302\n");
+    }
+
+    const RULES_JSON: &str = r#"{"namespaces":[{
+      "prefix": "legacy", "owner": "urn:cap:name:admin:legacy",
+      "strategy": "redirect", "target": "https://new.example/", "status": 303,
+      "rules": [
+        {"match": "old/{x}/{y}", "target": "https://new.example/{y}/{x}", "status": 301},
+        {"match": "docs/{rest*}", "target": "https://new.example/d/{rest}"}
+      ]
+    }]}"#;
+
+    /// The status is always there; the rule is there when one answered.
+    #[test]
+    fn resolve_names_the_status_and_the_rule_that_answered() {
+        let kernel = kernel_with(RULES_JSON);
+        for (path, want) in [
+            (
+                "legacy/old/a/b",
+                "legacy\tredirect\thttps://new.example/b/a\t301\told/{x}/{y}\n",
+            ),
+            (
+                "legacy/docs/a/b",
+                "legacy\tredirect\thttps://new.example/d/a/b\t303\tdocs/{rest*}\n",
+            ),
+            (
+                "legacy/other",
+                "legacy\tredirect\thttps://new.example/\t303\n",
+            ),
+            // A request cannot reach the host, however it is written.
+            (
+                "legacy/old/..",
+                "legacy\tredirect\thttps://new.example/\t303\n",
+            ),
+            (
+                "legacy/old/%2F/%2E%2E",
+                "legacy\tredirect\thttps://new.example/%252E%252E/%252F\t301\told/{x}/{y}\n",
+            ),
+            (
+                "legacy/docs/https://evil.example",
+                "legacy\tredirect\thttps://new.example/d/https%3A/evil.example\t303\t\
+                 docs/{rest*}\n",
+            ),
+        ] {
+            assert_eq!(
+                resolve_path(&kernel, path).expect("resolves"),
+                want,
+                "{path}"
+            );
+        }
+    }
+
+    /// A status the list refuses stops everything in the file, like an overlap.
+    #[test]
+    fn nothing_resolves_from_a_registry_with_a_bad_status() {
+        let kernel = kernel_with(
+            r#"{"namespaces":[
+              {"prefix":"resmud","owner":"o","strategy":"hosted","source":"urn:file:x"},
+              {"prefix":"acme","owner":"o","strategy":"redirect","target":"https://a.example/",
+               "status":404}
+            ]}"#,
+        );
+        for path in ["resmud/core", "acme/thing"] {
+            let err = resolve_path(&kernel, path).expect_err("refused whole");
+            assert!(
+                matches!(&err, Error::Endpoint(m) if m.contains("\"acme\"") && m.contains("404")),
+                "{path}: {err:?}"
+            );
+        }
     }
 
     /// An unclaimed path is permanently absent, not transiently unavailable —

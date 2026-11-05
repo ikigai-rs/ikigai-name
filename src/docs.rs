@@ -585,7 +585,7 @@ pub fn docs() -> AsyncFnEndpoint {
             let graph = match &found.strategy {
                 Strategy::Hosted { source } => source.clone(),
                 Strategy::Mirror { origin } => origin.clone(),
-                Strategy::Redirect { target } => {
+                Strategy::Redirect { target, .. } => {
                     return Err(Error::Endpoint(format!(
                         "name: {prefix:?} is served by its owner at {target} — documentation \
                          lives there"

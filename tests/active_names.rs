@@ -307,7 +307,7 @@ fn a_redirected_name_counts() {
     let w = World::new();
     assert_eq!(
         w.resolve("acme/thing").unwrap(),
-        "acme\tredirect\thttps://acme.example/ns\n"
+        "acme\tredirect\thttps://acme.example/ns\t302\n"
     );
     let reported = w.doc("acme/other").expect_err("reported as an error");
     assert!(reported.to_string().contains("redirects to"), "{reported}");

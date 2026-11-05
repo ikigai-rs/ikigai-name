@@ -38,7 +38,8 @@
 //! prefix to a new owner would let them answer for IRIs the previous owner
 //! minted, which is the one failure a permanence service must not have.
 
-use crate::registry::{ClaimError, Namespace, Registry, Strategy};
+use crate::registry::{ClaimError, Namespace, RedirectStatus, Registry, Rule, Strategy};
+use crate::rules::STATUS_CHOICES;
 use crate::{load_versioned, REGISTRY_IRI};
 use ikigai_core::{
     is_deny_scope, ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, ContentId, Description, Error,
@@ -163,6 +164,8 @@ fn strategy_from_args(inv: &Invocation<'_>) -> Result<Strategy> {
         }),
         "redirect" => Ok(Strategy::Redirect {
             target: required(inv, "target")?,
+            status: status_arg(inv)?,
+            rules: rules_arg(inv)?,
         }),
         "mirror" => Ok(Strategy::Mirror {
             origin: required(inv, "origin")?,
@@ -178,6 +181,51 @@ fn strategy_from_args(inv: &Invocation<'_>) -> Result<Strategy> {
             detail: format!("unknown strategy {other:?} (hosted, redirect, mirror)"),
         }),
     }
+}
+
+/// The optional `status` of a redirect. Absent means the default, because setting a
+/// strategy replaces the old one whole.
+fn status_arg(inv: &Invocation<'_>) -> Result<RedirectStatus> {
+    let Ok(raw) = inv.inline_str("status") else {
+        return Ok(RedirectStatus::default());
+    };
+    raw.trim()
+        .parse()
+        .ok()
+        .and_then(RedirectStatus::new)
+        .ok_or_else(|| Error::InvalidArgument {
+            name: "status".into(),
+            detail: format!("{raw:?} is not one of {STATUS_CHOICES}"),
+        })
+}
+
+/// The optional `rules` of a redirect, as the JSON list the registry holds. They are
+/// checked with the rest of the strategy, by the same rule a file is held to.
+fn rules_arg(inv: &Invocation<'_>) -> Result<Vec<Rule>> {
+    let Ok(raw) = inv.inline_str("rules") else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str(raw).map_err(|e| Error::InvalidArgument {
+        name: "rules".into(),
+        detail: format!("not a JSON list of rules: {e}"),
+    })
+}
+
+fn status_spec() -> ArgSpec {
+    ArgSpec::new("status")
+        .summary("redirect: the status, one of 301, 302, 303, 307, 308; 302 if absent")
+        .optional()
+        .class(XSD_STRING)
+}
+
+fn rules_spec() -> ArgSpec {
+    ArgSpec::new("rules")
+        .summary(
+            "redirect: the rewrite rules, as a JSON list of objects with match, target and an \
+             optional status",
+        )
+        .optional()
+        .class(XSD_STRING)
 }
 
 /// Conditionally replace the registry through its backing store (see
@@ -212,6 +260,16 @@ fn claim_error(prefix: &str, error: ClaimError) -> Error {
         ClaimError::Overlaps(existing) => Error::Denied(format!(
             "name: {prefix:?} overlaps the claimed namespace {existing:?}"
         )),
+        bad @ ClaimError::BadStatus(_) => Error::InvalidArgument {
+            name: "status".into(),
+            detail: format!("the namespace {prefix:?}: {bad}"),
+        },
+        bad @ (ClaimError::BadRule { .. } | ClaimError::NotARuleList(_)) => {
+            Error::InvalidArgument {
+                name: "rules".into(),
+                detail: format!("the namespace {prefix:?}: {bad}"),
+            }
+        }
     }
 }
 
@@ -286,6 +344,8 @@ pub fn claim() -> AsyncFnEndpoint {
                             .optional()
                             .class(XSD_STRING),
                     )
+                    .input(status_spec())
+                    .input(rules_spec())
                     .input(
                         ArgSpec::new("origin")
                             .summary("mirror: the source of truth this copy tracks")
@@ -330,6 +390,7 @@ pub fn admin() -> AsyncFnEndpoint {
                 }
                 _ => {
                     let strategy = strategy_from_args(inv)?;
+                    strategy.check().map_err(|e| claim_error(&prefix, e))?;
                     entry.strategy = strategy;
                     format!("updated {prefix}\n")
                 }
@@ -373,6 +434,8 @@ pub fn admin() -> AsyncFnEndpoint {
                             .optional()
                             .class(XSD_STRING),
                     )
+                    .input(status_spec())
+                    .input(rules_spec())
                     .input(
                         ArgSpec::new("origin")
                             .summary("mirror: the source of truth this copy tracks")
@@ -733,7 +796,67 @@ mod tests {
         assert_eq!(
             store.read().namespaces[0].strategy,
             Strategy::Redirect {
-                target: "https://resmud.example/ns".into()
+                target: "https://resmud.example/ns".into(),
+                status: RedirectStatus::default(),
+                rules: Vec::new(),
+            }
+        );
+    }
+
+    /// What a file can say, an administrator can say, held to the same rule; and
+    /// a refused edit stores nothing.
+    #[test]
+    fn a_redirects_status_and_rules_are_set_and_checked_like_a_files() {
+        let store = Store::new(ONE);
+        let kernel = kernel(&store);
+        let update = |extra: &[(&'static str, &'static str)]| {
+            let mut args = vec![
+                ("prefix", "resmud"),
+                ("strategy", "redirect"),
+                ("target", "https://resmud.example/ns"),
+            ];
+            args.extend_from_slice(extra);
+            call(
+                &kernel,
+                Verb::Sink,
+                "urn:name:admin",
+                &args,
+                &owner_of("resmud"),
+            )
+        };
+        let before = store.read();
+        for (extra, name) in [
+            (("status", "404"), "status"),
+            (("status", "soon"), "status"),
+            (("rules", "not json"), "rules"),
+            (
+                ("rules", r#"[{"match":"{x}","target":"https://{x}/"}]"#),
+                "rules",
+            ),
+        ] {
+            let err = update(&[extra]).expect_err(extra.1);
+            assert!(is_invalid(&err, name), "{extra:?} got: {err:?}");
+            assert_eq!(store.read(), before, "{extra:?} must store nothing");
+        }
+
+        update(&[
+            ("status", "308"),
+            (
+                "rules",
+                r#"[{"match":"a/{x}","target":"https://resmud.example/{x}","status":301}]"#,
+            ),
+        ])
+        .expect("updates");
+        assert_eq!(
+            store.read().namespaces[0].strategy,
+            Strategy::Redirect {
+                target: "https://resmud.example/ns".into(),
+                status: RedirectStatus::new(308).unwrap(),
+                rules: vec![Rule {
+                    pattern: "a/{x}".into(),
+                    target: "https://resmud.example/{x}".into(),
+                    status: RedirectStatus::new(301),
+                }],
             }
         );
     }
@@ -1040,7 +1163,9 @@ mod tests {
         assert_eq!(
             store.read().namespaces[0].strategy,
             Strategy::Redirect {
-                target: "https://acme.example/ns".into()
+                target: "https://acme.example/ns".into(),
+                status: RedirectStatus::default(),
+                rules: Vec::new(),
             },
             "the registry must be untouched"
         );
