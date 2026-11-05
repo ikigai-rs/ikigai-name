@@ -1,4 +1,4 @@
-//! The module recipe as one test: `ikigai-conformance` walks the twelve endpoints
+//! The module recipe as one test: `ikigai-conformance` walks the fifteen endpoints
 //! [`ikigai_name::space`] binds and reports every violation at once.
 //!
 //! ## The registry is a fixture — and it decides what is cacheable
@@ -11,12 +11,12 @@
 //! as the registry resource — a claim this file pins in both directions:
 //!
 //! - **Threaded** ([`RegistryStore`] served `.cacheable()` under its own IRI, as
-//!   an `ikigai-fs` cacheable mount or a watched file would): the six read faces
+//!   an `ikigai-fs` cacheable mount or a watched file would): the seven read faces
 //!   are declared `cacheable` and held to a cache hit under the registry's thread
 //!   ([`conforms`]).
 //! - **Live** (the same store served uncacheable, as a file read with no watcher
 //!   is): undeclared, the walk is clean; declared, the suite reports the downgrade
-//!   on all six and nothing else ([`over_a_live_registry_nothing_is_cached`]) —
+//!   on all seven and nothing else ([`over_a_live_registry_nothing_is_cached`]) —
 //!   the only way the ~2000× incident becomes visible, the types being identical.
 //!
 //! The half the suite cannot see (conformance PENDING #64): the probe's second
@@ -78,6 +78,7 @@ use ikigai_core::{
     Result as CoreResult, Space, UriTemplate, Verb,
 };
 use ikigai_name::admin::admin_scope;
+use ikigai_name::git::{READ_IRI, STORE_TEMPLATE};
 use ikigai_name::{Registry, Strategy, CAP_ADMIN_ANY, CAP_CLAIM, REGISTRY_IRI, SEEN_TEMPLATE};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -87,7 +88,7 @@ const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 const SEEN_PREFIX: &str = "urn:name:seen-source:namespace:";
 const SEEN_WRITE: &str = "urn:cap:conformance:seen-write";
 
-/// The twelve endpoints `space()` binds, by description id (which here equals
+/// The fifteen endpoints `space()` binds, by description id (which here equals
 /// `name()` — PENDING #57) and IRI.
 const REGISTRY: &str = "registry";
 const RESOLVE: &str = "resolve";
@@ -100,6 +101,9 @@ const HEALTH: &str = "health";
 const COUNT: &str = "active-name-count";
 const REPORT: &str = "namespace-report";
 const FLUSH: &str = "seen-flush";
+const GIT_SOURCE: &str = "git-source";
+const GIT_REFRESH: &str = "git-refresh";
+const GIT_STATUS: &str = "git-status";
 
 const REGISTRY_FACE: &str = "urn:name:registry";
 const RESOLVE_IRI: &str = "urn:name:resolve";
@@ -110,9 +114,9 @@ const STYLE_IRI: &str = ikigai_name::docs::STYLE_IRI;
 const DOCUMENT_IRI: &str = "urn:name:document";
 const HEALTH_IRI: &str = "urn:name:health";
 
-/// The six read faces, every one `.cacheable()` and none with a thread of its
+/// The seven read faces, every one `.cacheable()` and none with a thread of its
 /// own: exactly as cacheable as the registry (and the vocabulary) they read.
-const READ_FACES: [&str; 6] = [REGISTRY, RESOLVE, DOCS, DOCUMENT, DOC, HEALTH];
+const READ_FACES: [&str; 7] = [REGISTRY, RESOLVE, DOCS, DOCUMENT, DOC, HEALTH, GIT_SOURCE];
 
 /// Where the fixtures bind, doubling as the golden threads they name.
 const VOCAB_IRI: &str = "urn:conformance:vocab";
@@ -132,11 +136,14 @@ const REPORT_IRI: &str = "urn:name:stat:namespace:resmud";
 const SEEN_SET: &str = r#"{"period":"2026-01","names":["resmud/core","resmud/weapon"]}"#;
 const SEEN_PERIODS: &str = r#"{"periods":["2026-01"]}"#;
 
-/// Two namespaces: one hosted (what the read faces resolve) and one redirect
-/// (what `admin`'s probes rewrite, so the hosted one is untouched by the walk).
+/// Three namespaces: one hosted (what the read faces resolve), one redirect (what
+/// `admin`'s probes rewrite, so the hosted one is untouched by the walk), and one
+/// served from a repository (what the git faces answer for).
 const REGISTRY_JSON: &str = r#"{"namespaces":[
   {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:conformance:vocab"},
-  {"prefix":"acme","owner":"urn:cap:name:admin:acme","strategy":"redirect","target":"https://acme.example/ns"}
+  {"prefix":"acme","owner":"urn:cap:name:admin:acme","strategy":"redirect","target":"https://acme.example/ns"},
+  {"prefix":"gitns","owner":"urn:cap:name:admin:gitns","strategy":"mirror","origin":"urn:name:git:gitns",
+   "repository":{"url":"https://forge.example/acme/vocab","branch":"main","path":"core.ttl","shape":"urn:file:shapes.ttl"}}
 ]}"#;
 
 /// The hosted document. Skolem subjects under the tenant's namespace, well-known
@@ -243,6 +250,7 @@ impl Endpoint for RegistryStore {
 /// is sent, as a flush always does; the strict contract is held in
 /// `tests/active_names.rs`, and the walk's own Sink sends a fixture with no token.
 struct SeenStore {
+    id: &'static str,
     docs: Mutex<HashMap<String, String>>,
 }
 
@@ -255,6 +263,20 @@ impl SeenStore {
             SEEN_SET.to_string(),
         );
         SeenStore {
+            id: "seen-source",
+            docs: Mutex::new(docs),
+        }
+    }
+
+    /// The same contract at [`STORE_TEMPLATE`], holding the repository's last good copy.
+    fn git_seeded() -> SeenStore {
+        let mut docs = HashMap::new();
+        docs.insert(
+            "urn:name:git-store:document:gitns".to_string(),
+            VOCAB.to_string(),
+        );
+        SeenStore {
+            id: "git-store",
             docs: Mutex::new(docs),
         }
     }
@@ -290,7 +312,7 @@ impl Endpoint for SeenStore {
     }
 
     fn name(&self) -> &str {
-        "seen-source"
+        self.id
     }
 
     fn describe(&self) -> Description {
@@ -300,8 +322,8 @@ impl Endpoint for SeenStore {
                 .binding()
                 .class(XSD_STRING)
         };
-        Description::new("seen-source")
-            .title("Conformance seen-name store")
+        Description::new(self.id)
+            .title("Conformance store")
             .summary("The names a namespace resolved, served as a kernel resource for the walk.")
             .action(
                 ActionSpec::new(Verb::Source)
@@ -328,6 +350,32 @@ impl Endpoint for SeenStore {
                     .output("text/plain"),
             )
     }
+}
+
+/// A fixed answer, for what a repository-backed namespace reads through: a repository's
+/// file, its shapes, or a validator's verdict. `required` are the inputs it declares.
+fn fixed(
+    id: &'static str,
+    media: &'static str,
+    body: &'static str,
+    required: &[&'static str],
+) -> FnEndpoint {
+    let needs = required.to_vec();
+    let mut description = Description::new(id)
+        .title("Conformance stand-in")
+        .summary("A fixed answer, for what a repository-backed namespace reads through.")
+        .verb(Verb::Source)
+        .output(media);
+    for name in required {
+        description = description.input(ArgSpec::new(*name).summary("an input").class(XSD_STRING));
+    }
+    FnEndpoint::new(id, move |inv: &Invocation<'_>| {
+        for name in &needs {
+            inv.inline_str(name)?;
+        }
+        Ok(Representation::new(ReprType::new(media), body.as_bytes().to_vec()).cacheable())
+    })
+    .with_description(description)
 }
 
 /// The hosted vocabulary, under its own thread when `threaded`.
@@ -450,6 +498,27 @@ fn world_with(threaded: bool, engine: bool) -> World {
             SeenStore::seeded(),
         )
         .bind(
+            UriTemplate::parse(STORE_TEMPLATE).expect("a valid template"),
+            SeenStore::git_seeded(),
+        )
+        .bind(
+            Exact::new(READ_IRI),
+            fixed("git-read", "text/turtle", VOCAB, &["url", "branch", "path"]),
+        )
+        .bind(
+            Exact::new("urn:file:shapes.ttl"),
+            fixed("shapes", "text/turtle", VOCAB, &[]),
+        )
+        .bind(
+            Exact::new("urn:shacl:validate"),
+            fixed(
+                "shacl-validate",
+                "application/json",
+                r#"{"conforms":true,"violations":[]}"#,
+                &["data", "shapes"],
+            ),
+        )
+        .bind(
             Exact::new(REGISTRY_IRI),
             RegistryStore {
                 text: Arc::clone(&registry),
@@ -511,6 +580,7 @@ fn read_request(id: &str) -> Request {
         DOCUMENT => request(Verb::Source, DOCUMENT_IRI, &[("path", "resmud/core")]),
         DOC => request(Verb::Source, DOC_IRI, &[]),
         HEALTH => request(Verb::Source, HEALTH_IRI, &[]),
+        GIT_SOURCE => request(Verb::Source, "urn:name:git:gitns", &[]),
         other => panic!("not a read face: {other}"),
     }
 }
@@ -540,7 +610,7 @@ fn text(repr: &Representation) -> String {
 fn suite() -> Suite {
     Suite::new()
         // `space()` is configuration-free, so it names itself (SPACE-NAME): two
-        // calls claim `urn:iki:space:name` over the same twelve doors.
+        // calls claim `urn:iki:space:name` over the same fifteen doors.
         .self_named_space("name", ikigai_name::space)
         .fixture(Fixture::new(RESOLVE, Verb::Source).arg("path", "resmud/core"))
         .fixture(
@@ -572,6 +642,38 @@ fn suite() -> Suite {
                 .binding("key", "resmud:period:2026-01")
                 .arg("content", SEEN_SET),
         )
+        // A repository-backed namespace, and what it reads through.
+        .fixture(Fixture::new(GIT_SOURCE, Verb::Source).binding("prefix", "gitns"))
+        .fixture(
+            Fixture::new(GIT_STATUS, Verb::Source)
+                .binding("prefix", "gitns")
+                .capability(Capability::scoped([admin_scope("gitns")])),
+        )
+        .fixture(
+            Fixture::new(GIT_REFRESH, Verb::Sink)
+                .binding("prefix", "gitns")
+                .arg("content", r#"{"ref":"refs/heads/main"}"#),
+        )
+        .fixture(Fixture::new("git-store", Verb::Source).binding("key", "document:gitns"))
+        .fixture(
+            Fixture::new("git-store", Verb::Sink)
+                .binding("key", "document:gitns")
+                .arg("content", VOCAB),
+        )
+        .fixture(
+            Fixture::new("git-read", Verb::Source)
+                .arg("url", "https://forge.example/acme/vocab")
+                .arg("branch", "main")
+                .arg("path", "core.ttl"),
+        )
+        .fixture(
+            Fixture::new("shacl-validate", Verb::Source)
+                .arg("data", VOCAB)
+                .arg("shapes", VOCAB),
+        )
+        .pure("git-read")
+        .pure("shapes")
+        .pure("shacl-validate")
         // The documentation stylesheet reads nothing: a pure function of `theme`
         // (ledger #2737), so cacheable under its own name with nothing to cut.
         .pure(STYLE)
@@ -622,19 +724,20 @@ fn declared(suite: Suite) -> Suite {
     READ_FACES.iter().fold(suite, |s, id| s.cacheable(*id))
 }
 
-/// The walk saw the twelve module endpoints and the four fixtures, skipped
+/// The walk saw the fifteen module endpoints and the eight fixtures, skipped
 /// no checks (including DATATYPES and FAILURES), and opted out only the fixture
-/// store's Sink. A thirteenth module endpoint bound without a line here would be
+/// store's Sink. A sixteenth module endpoint bound without a line here would be
 /// held to a weaker standard.
 fn assert_shape(report: &Report) {
     assert_eq!(
-        report.endpoints, 16,
-        "twelve module endpoints, four fixtures: {report}"
+        report.endpoints, 23,
+        "fifteen module endpoints, eight fixtures: {report}"
     );
-    // registry, resolve, docs, style, document, doc, health, count, report: one Source
-    // each; claim and flush: one Sink each; admin: Sink + Delete; the two stores: Source +
-    // Sink each; vocab and sparql: one each.
-    assert_eq!(report.actions, 19, "{report}");
+    // registry, resolve, docs, style, document, doc, health, count, report, git-source,
+    // git-status: one Source each; claim, flush and git-refresh: one Sink each; admin: Sink +
+    // Delete; the three stores: Source + Sink each; vocab, sparql, and the reader, shapes
+    // and validator a repository reads through: one each.
+    assert_eq!(report.actions, 27, "{report}");
     assert_eq!(
         report.checks.skipped().count(),
         0,
@@ -644,7 +747,17 @@ fn assert_shape(report: &Report) {
     assert_eq!(report.declared.opted_out[0].endpoint, "registry-source");
     let mut pure = report.declared.pure.clone();
     pure.sort_unstable();
-    assert_eq!(pure, ["sparql-select", STYLE], "{report}");
+    assert_eq!(
+        pure,
+        [
+            "git-read",
+            "shacl-validate",
+            "shapes",
+            "sparql-select",
+            STYLE
+        ],
+        "{report}"
+    );
     assert!(report.declared.namespaces.is_empty(), "{report}");
 }
 
@@ -675,7 +788,7 @@ fn assert_only_unprobed(report: &Report, live: &[&str]) {
 
 /// With no clock neither count can say a month is over, so both are live.
 fn assert_nothing_unprobed(report: &Report) {
-    assert_only_unprobed(report, &[COUNT, REPORT]);
+    assert_only_unprobed(report, &[COUNT, GIT_STATUS, REPORT]);
 }
 
 /// Over a live registry BODIES rightly declines every Source but the pure
@@ -695,7 +808,7 @@ fn assert_unprobed_only_live_bodies(report: &Report) {
         .collect();
     unprobed.sort_unstable();
     let mut expected = READ_FACES.to_vec();
-    expected.extend(["registry-source", "vocab", COUNT, REPORT]);
+    expected.extend(["registry-source", "vocab", COUNT, GIT_STATUS, REPORT]);
     expected.sort_unstable();
     assert_eq!(unprobed, expected, "{report}");
 }
@@ -788,7 +901,7 @@ fn conforms() {
 /// uncacheable — the effective expiry is the registry's — so every read
 /// re-reads the registry and nothing is ever served from the cache. Undeclared,
 /// that is correct and the walk is clean; DECLARED, the suite reports the
-/// downgrade on all six and nothing else.
+/// downgrade on all seven and nothing else.
 #[test]
 fn over_a_live_registry_nothing_is_cached() {
     let w = world(false);
@@ -913,7 +1026,7 @@ fn a_forced_recomputation_is_the_same_bytes() {
         format!("resmud\tmirror\t{VOCAB_IRI}\n")
     );
     assert!(
-        text(&issue(&w.kernel, read_request(HEALTH), &root).unwrap()).contains("\"mirrored\": 1")
+        text(&issue(&w.kernel, read_request(HEALTH), &root).unwrap()).contains("\"mirrored\": 2")
     );
 
     // The vocabulary changes: the negotiated document and the page follow.
@@ -1000,7 +1113,7 @@ fn a_claim_overlapping_a_prefix_is_refused_typed() {
         );
     }
     assert!(w.writes().is_empty(), "a refused claim writes nothing");
-    assert_eq!(w.stored().namespaces.len(), 2);
+    assert_eq!(w.stored().namespaces.len(), 3);
 
     // Claiming a parent of a held prefix would swallow it: refused the same way.
     let mut deeper = w.stored();
@@ -1010,6 +1123,7 @@ fn a_claim_overlapping_a_prefix_is_refused_typed() {
         strategy: Strategy::Retired {
             reason: "ended".into(),
         },
+        repository: None,
     });
     *w.registry.write().unwrap() = serde_json::to_string(&deeper).unwrap();
     w.kernel.cut(REGISTRY_IRI);
@@ -1692,7 +1806,7 @@ fn conforms_on_a_clock() {
         .run_blocking(&kernel);
     eprintln!("[threaded registry, on a clock]\n{report}");
     assert!(report.is_clean(), "{report}");
-    assert_only_unprobed(&report, &[DOC, DOCUMENT, REPORT, RESOLVE]);
+    assert_only_unprobed(&report, &[DOC, DOCUMENT, GIT_STATUS, REPORT, RESOLVE]);
 
     let count = issue(
         &kernel,
@@ -1758,8 +1872,8 @@ fn conforms_over_the_real_engine() {
     assert!(report.is_clean(), "{report}");
     assert_nothing_unprobed(&report);
     assert_eq!(
-        report.endpoints, 19,
-        "twelve, three fixtures, four forms: {report}"
+        report.endpoints, 26,
+        "fifteen, seven fixtures, four forms: {report}"
     );
 
     // The page is real: every term the vocabulary defines, none it does not.
@@ -1850,6 +1964,7 @@ fn the_manifold_states_the_contract() {
                 ("target", false),
                 ("status", false),
                 ("rules", false),
+                ("repository", false),
                 ("origin", false),
                 ("owner", false),
             ],
@@ -1868,6 +1983,7 @@ fn the_manifold_states_the_contract() {
                 ("target", false),
                 ("status", false),
                 ("rules", false),
+                ("repository", false),
                 ("origin", false),
             ],
             outputs: TEXT,
@@ -1922,6 +2038,30 @@ fn the_manifold_states_the_contract() {
             requires: &[],
             inputs: &[],
             outputs: JSON,
+        },
+        Action {
+            iri: "urn:name:git:gitns",
+            id: GIT_SOURCE,
+            verb: Verb::Source,
+            requires: &[],
+            inputs: &[("prefix", true)],
+            outputs: &["text/turtle"],
+        },
+        Action {
+            iri: "urn:name:git-refresh:gitns",
+            id: GIT_REFRESH,
+            verb: Verb::Sink,
+            requires: &["urn:cap:name:git-refresh"],
+            inputs: &[("prefix", true), ("content", false)],
+            outputs: TEXT,
+        },
+        Action {
+            iri: "urn:name:git-status:gitns",
+            id: GIT_STATUS,
+            verb: Verb::Source,
+            requires: &[CAP_ADMIN_ANY],
+            inputs: &[("prefix", true)],
+            outputs: TEXT,
         },
     ];
     for Action {

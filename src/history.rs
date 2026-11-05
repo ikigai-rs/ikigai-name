@@ -279,7 +279,7 @@ async fn issue_repo(
     })
 }
 
-fn absent(source: &str, at: &AsOf) -> Error {
+pub(crate) fn absent(source: &str, at: &AsOf) -> Error {
     Error::NotFound(format!("name: {source} did not exist as of {at}"))
 }
 

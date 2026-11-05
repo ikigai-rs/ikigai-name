@@ -42,7 +42,7 @@ namespace:
 
 | strategy | answer | why it matters |
 |---|---|---|
-| `hosted` | documents served from here | the common case for a vocabulary you publish |
+| `hosted` | documents served from here, from a bound resource or [a file in someone's git repository](#a-namespace-served-from-a-git-repository) | the common case for a vocabulary you publish |
 | `redirect` | the owner's own node, with a [status and rewrite rules](#redirects-statuses-and-rewrite-rules) | the only thing a PURL service can do |
 | `mirror` | a copy, with `origin` still the source of truth | the namespace survives its origin going dark |
 
@@ -460,6 +460,141 @@ Git records no media type, so a past document's type comes from its file name
 (`.ttl`, `.nt`, `.nq`, `.n3`, `.trig`, `.rdf`, `.xml`, `.json`, `.jsonld`, `.txt`,
 `.md`), and any other name answers whatever `urn:repo:show` typed it as.
 
+## A namespace served from a git repository
+
+An owner can point a logical identifier at a file in their repository and change what it
+answers by pushing, with no server of their own. A `hosted` or `mirror` namespace names
+the repository in the registry, and its `source` or `origin` is `urn:name:git:{prefix}`:
+
+```json
+{
+  "prefix": "acme",
+  "owner": "urn:cap:name:admin:acme",
+  "strategy": "mirror",
+  "origin": "urn:name:git:acme",
+  "repository": {
+    "url": "https://github.com/acme/vocab",
+    "branch": "main",
+    "path": "vocab/core.ttl",
+    "shape": "urn:file:shapes/acme.ttl",
+    "private": true
+  }
+}
+```
+
+**A request never reaches the repository.** A read answers from the last good copy, in a
+store. Only a refresh reads the repository, so a client cannot make this host fetch or slow
+a resolution by way of a slow forge, and a request keeps the read-only authority it has
+always had. A host issues a refresh when a push webhook arrives and on a timer.
+
+| when | what happens |
+|---|---|
+| a push, webhook signature good | the file is read and checked. If it passes it is stored, and storing it cuts the golden thread, so the next read serves it |
+| a push to another branch | nothing is read |
+| nothing changed | nothing is written and nothing is cut |
+| the new version fails its shape | it is refused, the last good one keeps serving, and the reason is recorded |
+| the file is not Turtle, is empty, or is over `limits.max_document_bytes` | refused the same way |
+| the check cannot run (shapes unreadable, no validator bound) | nothing is accepted, and that is recorded rather than blamed on the push. An unchecked version is never served |
+| the repository, branch or file is gone (`NotFound` from the reader) | a `mirror` keeps serving its last good copy, and a `hosted` namespace answers `404`, because deleting the repository is how such an owner withdraws it. Either comes back when the file does |
+| any other failed read, such as a forge being down or a rejected token | recorded, and both keep serving |
+| no version has passed yet | a read answers `503`, naming where its administrator can read why |
+
+**Validation is SHACL, through `urn:shacl:validate`.** `shape` names the shapes every new
+version must conform to, and must be a `urn:file:` IRI.
+
+**The owner reads what happened** at `urn:name:git-status:{prefix}`, under
+`urn:cap:name:admin:{prefix}` or the operator's root capability, as one labeled line each:
+
+```text
+repository: https://github.com/acme/vocab, branch main, file vocab/core.ttl
+serving: b3:8d9c5c…, since 2026-11-05T12:00:00Z
+refused: b3:41f07a…, at 2026-11-05T13:00:00Z: it does not conform to urn:file:shapes/acme.ttl: https://acme.example/ns#Thing, at http://www.w3.org/2000/01/rdf-schema#comment: http://www.w3.org/ns/shacl#MinCountConstraintComponent
+```
+
+A version is named by its content ID, because a file read at a branch's head does not say
+which commit it came from. Times need a kernel with a clock.
+
+### What a repository can supply
+
+A repository's bytes reach the resolver's origin as Turtle or not at all:
+
+- The path must end `.ttl`, so a registry cannot name `index.html` or `app.js`. RDF/XML is
+  left out on purpose, as a browser runs a script inside XML.
+- The media type served is this module's, never the repository's or the reader's. A version
+  a reader labels as HTML, JavaScript or SVG is refused, and the validator's parse refuses
+  anything else that is not Turtle.
+- The only HTML is the [documentation page](#the-documentation-face), generated from the
+  graph with every name and comment escaped.
+
+### Authority
+
+A registry is written by claimants, and a refresh holds authority a claimant does not, so:
+
+| threat | what stops it |
+|---|---|
+| a token in the registry | there is no field for one. `token` refuses the whole file, and so does a URL with credentials in it, and neither refusal repeats the value |
+| one namespace using another's token, by naming it and a host of its own | a token's secret name is derived from the namespace, `name-git-token.{prefix}`, with every character but letters, digits, `-` and `_` written `~XX`, and with tenants `name-git-token.{tenant}.{prefix}`. The registry says only `private` |
+| a shape pointed at a secret, to read it back through a parse error | a shape must be `urn:file:`, and it and the validator run with only the read scopes of the refresh's capability. A refresh issued under the root capability cannot be narrowed this way, and has only the `urn:file:` rule |
+| a token echoed by a failing reader | every reason is scrubbed of it before it is stored or answered |
+| a registry sending a read anywhere it likes | `forge_reader` reads only the forges it is given, and `urn:http:get` checks `urn:cap:net:` at every redirect and drops the credential on a change of host |
+| a forged webhook | a door checks `verify_push` first. A signed `POST` only ever causes a read, which is validated like any other |
+
+### The seams
+
+Each is a bound IRI, so the library holds no git, no HTTP client and no file. See
+[`src/git.rs`](src/git.rs) for the contracts.
+
+| IRI | what |
+|---|---|
+| `urn:name:git-read` | Source taking `url`, `branch`, `path`, and optionally `token` and `as-of`. It answers the file, or `NotFound`. [`forge_reader`](src/git.rs) binds it over `urn:http:get` for GitHub, GitLab and Codeberg |
+| `urn:name:git-store:{key}` | `document:{prefix}` and `status:{prefix}`, with Source and a conditional Sink like the [counts' store](#active-names). Key it on `tenant_of` if there are tenants |
+| `urn:name:git-refresh:{prefix}` | the Sink a host issues, under `urn:cap:name:git-refresh`, what it reads and what it stores to. It takes the push payload as `content` |
+| `urn:shacl:validate`, `urn:secret:{name}` | from `ikigai-shacl` and `ikigai-secret`, bound by the host |
+
+### As of a date
+
+`as-of` on such a namespace reads the same repository's history through `urn:name:git-read`,
+with the registry as it stood from `urn:name:history-source`. History records what was pushed
+rather than what was served, so **a version refused at the time is answered as committed**.
+`forge_reader` can do this on GitHub and GitLab. Codeberg's commit listing ignores a date
+(checked 2026-11-05), so there it is refused rather than answered with the wrong commit.
+
+### Repositories in the standalone server
+
+The plain server still links no secret store and no outbound HTTP. Build it with the `git`
+feature, and start it with `--git`:
+
+```sh
+cargo build --release --features git
+ikigai-name-server --root /srv/namespaces --git --secrets /etc/ikigai-name/secrets
+```
+
+The last good copies are in `git/` under `--root`, or under each tenant's directory, so
+splitting a tenant off copies them, and a mirror's copy outlives a restart. A background timer
+and a signed push hold the only write scopes, on that directory alone. It refreshes at startup
+and every `--git-every` seconds. Secrets outside `--root` only: the server refuses to start
+otherwise. Two processes must not serve from one directory.
+
+**To serve a repository:**
+
+1. Claim the namespace, as above, with its shapes under `--root`.
+2. Set its webhook on the forge to `POST https://your.host/-/git/{prefix}`, content type
+   `application/json`, the push event, and a random key. GitHub, Gitea and Forgejo sign with
+   `X-Hub-Signature-256`. GitLab sends a plain token instead, which this door does not
+   accept, so a GitLab repository is refreshed by the timer alone.
+3. Store that key as `name-git-hook.{prefix}`, and for a private repository a read-only token
+   as `name-git-token.{prefix}`, in the secret store.
+
+The server links the validator without rudof, which covers SHACL Core. A shape outside it, such
+as SHACL-SPARQL, is refused by name, and nothing is accepted until it changes.
+
+**The owner reads a refusal in the forge's webhook deliveries**, as the response to the push
+that caused it. This server has no authenticated transport, the same reason the counts are not
+routed, so `urn:name:git-status:{prefix}` is not routed either; the operator reads it from
+`git/status.{prefix}.json`. Without `--count-names` this server has no clock, so that file holds
+no times, and its modified time is when it last changed. A kernel with a clock buffers names
+for a flush, and nothing here should hold those for nobody.
+
 ## Active names
 
 A namespace's volume is its **active names**: the distinct names that resolved at
@@ -570,6 +705,9 @@ new.
 | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
 | `urn:name:stat:namespace:{prefix}` | Source | that count for every month held |
 | `urn:name:seen-flush` | Sink | store the names resolved since the last flush |
+| `urn:name:git:{prefix}` | Source | the last good copy of a repository's file |
+| `urn:name:git-refresh:{prefix}` | Sink | read the repository again, and accept or refuse what it finds |
+| `urn:name:git-status:{prefix}` | Source | what those refreshes found, for the namespace's administrator |
 | `urn:name:claim` | Sink | claim a prefix nobody holds |
 | `urn:name:admin` | Sink · Delete | change how a namespace resolves · retire it |
 
@@ -580,9 +718,9 @@ pipeline citizen: `echo acme | sink urn:name:claim strategy=hosted source=…`.
 ### Conformance
 
 The module passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
-— `tests/conformance.rs` walks every endpoint above and holds the six read
+— `tests/conformance.rs` walks every endpoint above and holds the seven read
 faces to their `.cacheable()` marking over a threaded registry, then shows the
-same walk over a live registry reporting the downgrade on all six, and walks them
+same walk over a live registry reporting the downgrade on all seven, and walks them
 again on a clock, with the counting on. What the
 suite cannot see is pinned by hand in the same file: a forced recomputation
 returns the same bytes; a claim overlapping a held prefix is a typed, permanent
@@ -619,7 +757,8 @@ The binary is a **host**: it binds `ikigai-name`, `ikigai-fs`, `ikigai-sparql`
 and `ikigai-web` into a kernel and puts HTTP on it. The library knows nothing
 about files, ports, or HTTP. Because the feature list is the module manifest,
 what this process *cannot* do — calendars, exec, secrets — is a property of the
-build rather than of a config file someone might edit.
+build rather than of a config file someone might edit. A build with the `git`
+feature adds the secret store, an HTTP client and the validator, and nothing else.
 
 | flag | default | |
 |---|---|---|
@@ -630,13 +769,19 @@ build rather than of a config file someone might edit.
 | `--tenant HOST` | none | answer for `HOST` from `--root/HOST`, and refuse any host not named; repeatable. See [Tenants by host](#tenants-by-host) |
 | `--count-names` | off | count the distinct names each namespace resolves per month. See [Active names](#in-the-standalone-server) |
 | `--flush-every SECONDS` | `60` | with `--count-names`, how often to store them |
+| `--git` | off | serve namespaces from git repositories; needs a build with the `git` feature. See [In the standalone server](#repositories-in-the-standalone-server) |
+| `--git-every SECONDS` | `900` | with `--git`, how often to read them if no webhook says to |
+| `--secrets DIR` | the system's store | with `--git`, a directory holding tokens and webhook keys, outside `--root` |
+| `--git-forge HOST=KIND[@API]` | none | with `--git`, read repositories on `HOST` too; `KIND` is `github`, `gitlab` or `forgejo`; repeatable |
 
-The public surface is two routes, plus the documentation page's two assets,
-served `routes_only` so anything else 404s before it reaches a resource:
+The public surface is two routes, plus the documentation page's two assets, and with
+`--git` a signed webhook, served `routes_only` so anything else 404s before it reaches a
+resource:
 
 ```text
 /-/style       → urn:name:style      the page's stylesheet
 /-/htmx        → urn:iki:ui:htmx     htmx, vendored by ikigai-ui
+/-/git/{ns}    → urn:name:git-refresh:{ns}   with --git: a signed POST and nothing else
 /{ns}          → urn:name:doc:{ns}
 /{ns}/{doc}    → urn:name:doc:{ns}/{doc}
 ```
@@ -656,7 +801,8 @@ Administration is deliberately absent from it. The server holds a **read-only**
 capability jailed to `--root`, so `urn:name:claim` and `urn:name:admin` cannot be
 performed by this process however it is addressed — they belong on a local or
 authenticated transport. `--count-names` adds one write scope, held by a background
-task and limited to `seen/`, which no request can reach.
+task and limited to `seen/`, which no request can reach. `--git` adds another, limited to
+`git/`, held by a background task and by a `POST` whose signature verifies.
 
 ## Known limitations
 
@@ -669,6 +815,15 @@ task and limited to `seen/`, which no request can reach.
 - **A retired namespace answers `404`, not `410`.** The distinction — *gone* as
   against *never here* — is exactly what a tombstone exists to express, and it
   is lost at the HTTP boundary for the same reason.
+
+## 0.6.0 migration
+
+Rust callers: `Namespace` gains `repository`, which is `None` for everything that exists
+today, and `ClaimError` gains `BadRepository`. `urn:name:claim` and `urn:name:admin` gain an
+optional `repository`, and as setting a strategy replaces the old one whole, an update that
+names none removes it. A registry file with no `repository` means what it did, reads and
+writes the same bytes, and a build without the `git` feature links nothing new but `hmac` and
+`sha2`, which `verify_push` uses. `space()` binds three more faces, under `urn:name:git`.
 
 ## 0.5.0 migration
 
@@ -700,7 +855,8 @@ conformance now checks DATATYPES and FAILURES by default.
 
 **Built and walked clean by `ikigai-conformance`:** the registry, the claim rule,
 resolution, capability-scoped administration, the HTML documentation face, content
-negotiation, limits, cacheability and active names.
+negotiation, limits, cacheability, active names, and namespaces served from a git
+repository.
 
 **On crates.io** as `ikigai-name` (0.2.x): `cargo add ikigai-name` to embed it,
 or `cargo install --locked ikigai-name --features server` for the standalone
@@ -709,7 +865,14 @@ points at; embedded, a host binds `ikigai_name::space()` and nothing else.
 
 **Built but not yet servable as it stands:** [as-of resolution](#as-of-a-date),
 which needs a file-at-a-commit resource from `ikigai-repo`. Over HTTP, the
-[active-name counts](#active-names), which need an authenticated transport.
+[active-name counts](#active-names) and a repository's status, which need an authenticated
+transport.
+
+**Tested mostly against stand-ins.** The tests use a real git history, a canned transport and a
+local forge. By hand, once (2026-11-05): the built server read a public file from GitHub over
+HTTPS, validated it and served it and its page, and `forge_reader`'s file URLs answered 200 from
+GitLab and Codeberg. Not run: a real webhook delivery, a private repository on a real forge, or
+GitLab or Codeberg through the binary.
 
 **Not built**, and a permanence promise is weaker without them: signed redirect
 provenance and succession, and peer mirroring.

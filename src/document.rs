@@ -25,6 +25,7 @@
 //! `ETag` and answers `If-None-Match` — inventing a second one at this layer
 //! would give the same bytes two identities.
 
+use crate::git;
 use crate::history::{as_of_arg, as_of_input, load_as_of, no_page_as_of, read_as_of, when};
 use crate::registry::Strategy;
 use crate::stat::{self, Seen};
@@ -157,6 +158,7 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
         let found = resolve_path(past.as_ref().unwrap_or(&registry), &path, at.as_ref())?;
         let prefix = found.prefix.clone();
         let strategy = found.strategy.clone();
+        let repository = found.repository.clone();
 
         let source = match &strategy {
             Strategy::Hosted { source } => source.clone(),
@@ -212,9 +214,10 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
 
         let iri = Iri::parse(&source)
             .map_err(|e| Error::Endpoint(format!("name: bad source {source:?}: {e}")))?;
-        let stored = match &at {
-            Some(at) => read_as_of(inv, &source, at).await?,
-            None => inv.source(&iri).await?,
+        let stored = match (&at, &repository) {
+            (Some(at), Some(repository)) => git::read_past(inv, &prefix, repository, at).await?,
+            (Some(at), None) => read_as_of(inv, &source, at).await?,
+            (None, _) => inv.source(&iri).await?,
         };
 
         // The ceiling is checked on the way OUT, not on the way in: by the

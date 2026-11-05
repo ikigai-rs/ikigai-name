@@ -24,6 +24,8 @@
 //! at the first entry the claim rule would have refused. There is one rule,
 //! not a load rule and a claim rule that must be kept in step.
 
+use crate::git::repository_refusal;
+pub use crate::git::Repository;
 use crate::rules::{status_from_json, status_refusal};
 pub use crate::rules::{RedirectStatus, Rule};
 use serde::{Deserialize, Serialize};
@@ -82,6 +84,10 @@ pub struct Namespace {
     /// How this namespace produces its answer.
     #[serde(flatten)]
     pub strategy: Strategy,
+    /// The git repository a `hosted` or `mirror` namespace is served from, if any.
+    /// See [`git`](crate::git).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<Repository>,
 }
 
 /// Where a `redirect` namespace sends one path.
@@ -187,6 +193,8 @@ pub enum ClaimError {
         /// A clause saying what is wrong with it.
         reason: String,
     },
+    /// A repository binding the registry cannot hold. Carries the clause saying why.
+    BadRepository(String),
 }
 
 impl std::fmt::Display for ClaimError {
@@ -205,6 +213,7 @@ impl std::fmt::Display for ClaimError {
                 pattern,
                 reason,
             } => write!(f, "in rule {rule} ({pattern:?}), {reason}"),
+            ClaimError::BadRepository(reason) => write!(f, "its repository {reason}"),
         }
     }
 }
@@ -273,6 +282,34 @@ impl From<serde_json::Error> for LoadError {
     }
 }
 
+impl Namespace {
+    /// Whether a registry may hold this entry: its strategy, and any repository
+    /// together with the strategy that serves it.
+    pub fn check(&self) -> Result<(), ClaimError> {
+        self.strategy.check()?;
+        let Some(repository) = &self.repository else {
+            return Ok(());
+        };
+        repository.check().map_err(ClaimError::BadRepository)?;
+        let served = crate::git::source_iri(&self.prefix);
+        match &self.strategy {
+            Strategy::Hosted { source: named } | Strategy::Mirror { origin: named }
+                if *named == served =>
+            {
+                Ok(())
+            }
+            Strategy::Hosted { .. } | Strategy::Mirror { .. } => {
+                Err(ClaimError::BadRepository(format!(
+                    "is served at {served}, so the namespace must name that as its source or origin"
+                )))
+            }
+            _ => Err(ClaimError::BadRepository(
+                "belongs to a hosted or mirror namespace, and this is neither".into(),
+            )),
+        }
+    }
+}
+
 impl Strategy {
     /// Whether a registry may hold this strategy: every rule of a `redirect` parses,
     /// and no capture it uses is undefined.
@@ -296,13 +333,17 @@ impl Strategy {
 fn refuse_by_name(raw: &serde_json::Value) -> Option<LoadError> {
     raw.get("namespaces")?.as_array()?.iter().find_map(|entry| {
         let prefix = entry.get("prefix")?.as_str()?;
-        if entry.get("strategy")?.as_str()? != "redirect" {
-            return None;
-        }
-        redirect_refusal(entry).map(|error| LoadError::Refused {
-            prefix: prefix.to_string(),
-            error,
-        })
+        let refusal = if entry.get("strategy")?.as_str()? == "redirect" {
+            redirect_refusal(entry)
+        } else {
+            None
+        };
+        refusal
+            .or_else(|| repository_refusal(entry.get("repository")?))
+            .map(|error| LoadError::Refused {
+                prefix: prefix.to_string(),
+                error,
+            })
     })
 }
 
@@ -402,7 +443,7 @@ impl Registry {
     /// The strategy is checked here too, so a file and a claim are held to one rule.
     pub fn claim(&mut self, namespace: Namespace) -> Result<(), ClaimError> {
         self.may_claim(&namespace.prefix)?;
-        namespace.strategy.check()?;
+        namespace.check()?;
         self.namespaces.push(namespace);
         Ok(())
     }
@@ -419,6 +460,7 @@ mod tests {
             strategy: Strategy::Hosted {
                 source: format!("urn:file:{prefix}"),
             },
+            repository: None,
         }
     }
 
@@ -531,6 +573,7 @@ mod tests {
                 strategy: Strategy::Retired {
                     reason: "project ended".into(),
                 },
+                repository: None,
             }],
             ..Registry::default()
         };
@@ -561,6 +604,7 @@ mod tests {
                             status: RedirectStatus::new(301),
                         }],
                     },
+                    repository: None,
                 },
             ],
             ..Registry::default()
@@ -877,6 +921,7 @@ mod tests {
                         status: None,
                     }],
                 },
+                repository: None,
             })
             .expect_err("a capture in the host");
         assert!(
@@ -906,6 +951,7 @@ mod tests {
                     rule("docs/{rest*}", "https://three.example/{rest}", status(308)),
                 ],
             },
+            repository: None,
         }
     }
 
