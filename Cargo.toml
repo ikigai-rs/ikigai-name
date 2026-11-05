@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-name"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 # Measured 2026-10-14 (ledger #195), not guessed: on 1.87, clippy -D warnings and the
 # tests pass with and without `server`; on 1.86 the library itself fails (ikigai-core

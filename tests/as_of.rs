@@ -360,13 +360,78 @@ fn the_registry_answers_as_it_stood_at_the_date() {
     };
     assert_eq!(
         resolve("2026-04-01").unwrap(),
-        "later\tredirect\thttps://later.example/ns\n"
+        "later\tredirect\thttps://later.example/ns\t302\n"
     );
     let err = resolve("2026-02-01").unwrap_err();
     assert!(
         matches!(&err, Error::NotFound(m)
             if m.contains("\"later/x\"") && m.contains("as of 2026-02-01T23:59:59Z")),
         "{err:?}"
+    );
+}
+
+/// The status and the rules are the registry's, so a past answer uses the ones it
+/// held then: one commit with a 302 and no rules, one with a rule and 301, and today's
+/// with the rule moved and its status changed.
+#[test]
+fn a_past_answer_uses_the_status_and_rules_held_then() {
+    let repo = Repo::new();
+    let moved = |fields: &str| {
+        format!(
+            r#"{{"prefix":"moved","owner":"urn:cap:name:admin:moved",
+            "strategy":"redirect","target":"https://first.example/"{fields}}}"#
+        )
+    };
+    let write = |entry: String, date: &str| {
+        repo.write("registry.json", &registry(&[entry.as_str()]));
+        repo.commit(date);
+    };
+    write(moved(""), "2026-06-10T12:00:00Z");
+    write(
+        moved(
+            r#","status":301,"rules":[
+            {"match":"old/{x}","target":"https://second.example/{x}"}]"#,
+        ),
+        "2026-07-10T12:00:00Z",
+    );
+    write(
+        moved(
+            r#","status":308,"rules":[
+            {"match":"old/{x}","target":"https://third.example/{x}","status":307}]"#,
+        ),
+        "2026-08-10T12:00:00Z",
+    );
+    let (kernel, _) = repo.kernel();
+    let resolve = |args: &[(&str, &str)]| text(&get(&kernel, "urn:name:resolve", args).unwrap());
+
+    for (at, want) in [
+        (
+            "2026-06-20",
+            "moved\tredirect\thttps://first.example/\t302\n",
+        ),
+        (
+            "2026-07-20",
+            "moved\tredirect\thttps://second.example/a\t301\told/{x}\n",
+        ),
+        (
+            "2026-08-20",
+            "moved\tredirect\thttps://third.example/a\t307\told/{x}\n",
+        ),
+    ] {
+        assert_eq!(
+            resolve(&[("path", "moved/old/a"), ("as-of", at)]),
+            want,
+            "{at}"
+        );
+    }
+    assert_eq!(
+        resolve(&[("path", "moved/other"), ("as-of", "2026-07-20")]),
+        "moved\tredirect\thttps://first.example/\t301\n"
+    );
+    // No date is today's answer.
+    assert_eq!(
+        resolve(&[("path", "moved/old/a")]),
+        "moved\tredirect\thttps://third.example/a\t307\told/{x}\n"
     );
 }
 

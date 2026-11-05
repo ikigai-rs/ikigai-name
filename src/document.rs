@@ -165,12 +165,16 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
             // HTTP face answer with a redirect instead of guessing.
             // The name did resolve, to the owner's node, whatever the face does
             // with the answer, so it counts.
-            Strategy::Redirect { target } => {
+            Strategy::Redirect { target, .. } => {
                 if at.is_none() {
                     if let Some(seen) = seen {
                         seen.note(inv, &prefix, &path);
                     }
                 }
+                // The same answer urn:name:resolve gives this path, rules and all.
+                let target = found
+                    .redirection(&path)
+                    .map_or_else(|| target.clone(), |answer| answer.target);
                 return Err(Error::Endpoint(format!(
                     "name: {prefix:?} redirects to {target}"
                 )));
@@ -496,6 +500,25 @@ mod tests {
     fn an_unclaimed_path_is_not_found() {
         let err = get(&kernel(false), &[("path", "nobody/here")]).expect_err("unclaimed");
         assert!(matches!(err, Error::NotFound(_)), "got: {err:?}");
+    }
+
+    /// The document face names the same place `urn:name:resolve` does.
+    #[test]
+    fn a_redirected_namespace_reports_the_target_its_rule_chose() {
+        const RULES: &str = r#"{"namespaces":[{"prefix":"acme","owner":"x",
+            "strategy":"redirect","target":"https://acme.example/ns",
+            "rules":[{"match":"old/{x}","target":"https://new.example/{x}"}]}]}"#;
+        let kernel = Kernel::new(Arc::new(space().bind(
+            Exact::new("urn:name:registry-source"),
+            serving("application/json", RULES),
+        )));
+        for (path, want) in [
+            ("acme/old/a", "https://new.example/a"),
+            ("acme/other", "https://acme.example/ns"),
+        ] {
+            let err = get(&kernel, &[("path", path)]).expect_err("the owner serves it");
+            assert!(err.to_string().ends_with(want), "{path}: {err}");
+        }
     }
 
     /// The ceiling is the only bound on what one request can make this host

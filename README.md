@@ -43,7 +43,7 @@ namespace:
 | strategy | answer | why it matters |
 |---|---|---|
 | `hosted` | documents served from here | the common case for a vocabulary you publish |
-| `redirect` | the owner's own node | the only thing a PURL service can do |
+| `redirect` | the owner's own node, with a [status and rewrite rules](#redirects-statuses-and-rewrite-rules) | the only thing a PURL service can do |
 | `mirror` | a copy, with `origin` still the source of truth | the namespace survives its origin going dark |
 
 ## One IRI, many representations
@@ -267,6 +267,150 @@ memory, so an unbounded one is the only way a single request can hurt the host;
 exceeding the ceiling is refused with an error naming the setting that would
 raise it.
 
+## Redirects: statuses and rewrite rules
+
+A `redirect` namespace can move an existing URL scheme, or reshape it, as data in
+the registry. It holds a `status` and an ordered list of `rules`:
+
+```json
+{
+  "prefix": "catalog",
+  "owner": "urn:cap:name:admin:catalog",
+  "strategy": "redirect",
+  "target": "https://new.example/catalog",
+  "status": 302,
+  "rules": [
+    { "match": "item/{year}/{id}", "target": "https://new.example/items/{id}?year={year}" },
+    { "match": "docs/{rest*}", "target": "https://new.example/manual/{rest}", "status": 308 }
+  ]
+}
+```
+
+`urn:name:resolve` answers the prefix, the strategy, the target and the status,
+separated by tabs, and then the `match` of the rule that answered, if one did:
+
+```sh
+ikigai -c 'source urn:name:resolve path=catalog/item/2019/42'
+# catalog	redirect	https://new.example/items/42?year=2019	302	item/{year}/{id}
+ikigai -c 'source urn:name:resolve path=catalog/docs/setup/linux'
+# catalog	redirect	https://new.example/manual/setup/linux	308	docs/{rest*}
+ikigai -c 'source urn:name:resolve path=catalog/anything-else'
+# catalog	redirect	https://new.example/catalog	302
+```
+
+**This is the registry and resolution only.** The HTTP face does not answer with
+these statuses yet: see [Known limitations](#known-limitations).
+
+### Which status
+
+`status` is one of 301, 302, 303, 307 or 308, and 302 if absent. Any other value
+refuses the whole registry, naming the namespace.
+
+| status | for |
+|---|---|
+| 302, 307 | a logical name pointing at a document that will move. A permanent code makes clients remember the target and skip the name. 307 also keeps the request's method |
+| 303 | a name for a **thing**, answered by a document about it |
+| 301, 308 | an old URL moving permanently onto a logical name. 308 also keeps the request's method |
+
+### How a rule matches
+
+- Rules are tried in order, and the **first that matches answers**. With no match,
+  the namespace's own `target` and `status` apply, and that target is answered as
+  written: nothing is appended to it.
+- A `match` is relative to the prefix, so the rule above answers
+  `catalog/item/2019/42`, and renaming a prefix leaves its rules alone.
+- A `match` is segments separated by `/`, each one literal text or one whole capture.
+  `{name}` takes one segment. `{name*}`, last only, takes the rest of the path, at
+  least one segment. `{id}.html` is refused, because a capture is a whole segment.
+- A `target` writes either kind of capture as `{name}`, as often as it likes. A
+  rule's optional `status` overrides the namespace's.
+- `resmud/core` and `/resmud//core` are one path here as everywhere, so doubled
+  separators never reach a capture.
+
+A `target` is an RFC 6570 Level 1 template, parsed and encoded by `ikigai-core`'s
+`UriTemplate`. A `match` is a small syntax of this crate's, because RFC 6570 defines
+expansion and not matching. See [`src/rules.rs`](src/rules.rs).
+
+### What a request cannot do
+
+A captured value comes from whoever made the request, and it can never change the
+host, the scheme or the number of segments a rule's target has:
+
+| in the path | what happens |
+|---|---|
+| `%2F` | `%` is encoded too, so it arrives as the text `%252F`, never a separator |
+| `..` or `.` | matches no capture, so that rule does not match. Encoding cannot help: `.` needs no encoding, and URL parsers read `%2E%2E` as `..` |
+| `//evil.example` | the doubled separator collapses, so `evil.example` is an ordinary segment under the rule's host |
+| `https://evil.example/x` | too many segments for `{name}`. Under `{name*}` it stays below the rule's host, as `https%3A/evil.example/x` |
+
+The `/` between the segments of a `{name*}` stays a `/`, since that is what the
+capture is for. Everything else outside `A-Z a-z 0-9 - . _ ~` is percent-encoded.
+
+### What refuses the registry
+
+A bad rule refuses the **whole** registry, by the same all-or-nothing rule as
+overlapping prefixes, with a sentence naming the namespace and the rule:
+
+```text
+the namespace "catalog" cannot be claimed: in rule 2 ("docs/{rest*}"), its target uses {path}, which its match does not capture
+```
+
+| refused | because |
+|---|---|
+| a target using a capture its match does not define | there is nothing to fill it |
+| a capture defined twice in one match | one of them would be lost |
+| a template that does not parse, or `{x}{y}` in a target | RFC 6570 Level 1 here refuses adjacent captures as ambiguous |
+| `{name*}` before the end of a match, or `{name*}` in a target | it takes the rest of the path; a target writes `{name}` |
+| a target not beginning with a literal scheme and host, ended by `/`, `?` or `#` before its first capture | `https://{x}/` and `https://new.example{x}` would let a request choose the host |
+| spaces or control characters in a target, or control characters in a match | they are not URLs, and a tab would break the tab-separated answer |
+| a misspelled field in a rule | a typo in `status` must not silently mean the namespace's |
+
+`urn:name:claim` and `urn:name:admin` take the same `status`, and `rules` as a JSON
+list, and are held to the same checks. Setting a strategy replaces the old one whole,
+so an update that names neither returns the namespace to 302 and no rules.
+
+### A worked migration
+
+An organization has `https://old.example/reports/2019/42`, wants it at
+`https://archive.example/2019-reports/42`, and wants the next move to need no
+further change for anyone who linked to it.
+
+**1. Put a logical name in front of the old scheme.** Claim `reports` as a redirect,
+still pointing at the old host, with the old shape kept by a rule. Publish
+`https://iriref.org/reports/2019/42` as the name from now on. 302, because the
+target is going to move:
+
+```json
+{
+  "prefix": "reports",
+  "owner": "urn:cap:name:admin:reports",
+  "strategy": "redirect",
+  "target": "https://old.example/reports",
+  "rules": [
+    { "match": "{year}/{id}", "target": "https://old.example/reports/{year}/{id}" }
+  ]
+}
+```
+
+**2. Point the old URLs at the names.** On `old.example`, answer a permanent 301 or
+308 from `/reports/{year}/{id}` to `https://iriref.org/reports/{year}/{id}`. That
+redirect is the old host's own. A client now remembers the name and not the old host.
+
+**3. Move the documents, and change one rule.** The name stays and the reshape is an
+edit to the registry, with no rebuild. `as-of` still reports the old answer for a date
+before the edit:
+
+```json
+{ "match": "{year}/{id}", "target": "https://archive.example/{year}-reports/{id}" }
+```
+
+```sh
+ikigai -c 'source urn:name:resolve path=reports/2019/42'
+# reports	redirect	https://archive.example/2019-reports/42	302	{year}/{id}
+ikigai -c 'source urn:name:resolve path=reports/2019/42 as-of=2026-03-31'
+# reports	redirect	https://old.example/reports/2019/42	302	{year}/{id}
+```
+
 ## As of a date
 
 `urn:name:document`, `urn:name:resolve` and `urn:name:registry` take `as-of`:
@@ -283,6 +427,7 @@ ikigai -c 'source urn:name:registry as-of=2026-03-31'
 The namespace comes from the registry as it stood then and the document from the
 source as it stood then, so a namespace retired since still answers for a date
 when it was in force, and one claimed since answers `NotFound` for a date before.
+A redirect's status and rules are the ones the registry held at that date too.
 Only today's `limits` apply, because they are what this deployment holds itself
 to, whatever an old file allowed.
 
@@ -419,7 +564,7 @@ new.
 | `urn:name:document` | Source | the namespace document, negotiated (`as=`) |
 | `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment, or with `view=page` the page showing that term |
 | `urn:name:style` | Source | the documentation page's stylesheet for `theme=` |
-| `urn:name:resolve` | Source | how a path resolves, or a `NotFound` naming it |
+| `urn:name:resolve` | Source | how a path resolves (for a redirect, its target, status and any rule that answered), or a `NotFound` naming it |
 | `urn:name:registry` | Source | every claimed namespace, as JSON |
 | `urn:name:health` | Source | what this deployment holds, and what it refuses |
 | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
@@ -518,10 +663,22 @@ task and limited to `seen/`, which no request can reach.
 - **A `redirect` namespace answers HTTP 500.** The module reports the target,
   but the HTTP face has no mapping for "this is somewhere else", so it surfaces
   as a server error rather than a `303`. Until that lands in `ikigai-web`, only
-  `hosted` and `mirror` namespaces are servable over HTTP.
+  `hosted` and `mirror` namespaces are servable over HTTP. That includes
+  [a namespace's status and rules](#redirects-statuses-and-rewrite-rules):
+  `urn:name:resolve` reports them, and no HTTP response carries them yet.
 - **A retired namespace answers `404`, not `410`.** The distinction — *gone* as
   against *never here* — is exactly what a tombstone exists to express, and it
   is lost at the HTTP boundary for the same reason.
+
+## 0.5.0 migration
+
+`urn:name:resolve`'s answer for a `redirect` namespace gains a field: the status, always,
+so `prefix`, `strategy`, `target`, `status`, and then the rule's `match` if one answered.
+A reader that took everything after the second tab as the target must stop. Rust
+callers: `Strategy::Redirect` gains `status` and `rules`, and `ClaimError` gains
+`BadStatus`, `BadRule` and `NotARuleList`. A registry file with neither field means
+what it did, at 302. `urn:name:registry` and anything stored by `urn:name:claim` or
+`urn:name:admin` now write each redirect's `status` out.
 
 ## 0.4.0 migration
 
