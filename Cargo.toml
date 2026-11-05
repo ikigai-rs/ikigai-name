@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-name"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 # Measured 2026-10-14 (ledger #195), not guessed: on 1.87, clippy -D warnings and the
 # tests pass with and without `server`; on 1.86 the library itself fails (ikigai-core
@@ -37,7 +37,7 @@ ikigai-a11y = "0.4.0"
 ikigai-web = { version = "0.2.0", optional = true }
 ikigai-fs = { version = "0.2.2", optional = true }
 ikigai-sparql = { version = "0.3.1", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
 # The vendored htmx the documentation page loads, as `urn:iki:ui:htmx` (ledger #2737):
 # the shared home for it, rather than a private copy. 0.4.0 is the release on core 0.2;
 # a caret on it is <0.5.0.
@@ -67,6 +67,12 @@ required-features = ["server"]
 [[test]]
 name = "tenancy_http"
 path = "tests/tenancy_http.rs"
+required-features = ["server"]
+
+# The counts, end to end: names resolved over HTTP, stored by the flush task.
+[[test]]
+name = "active_names_http"
+path = "tests/active_names_http.rs"
 required-features = ["server"]
 
 [dev-dependencies]

@@ -141,7 +141,7 @@ impl std::fmt::Display for ClaimError {
 
 /// Split a prefix into path segments, ignoring leading, trailing and doubled
 /// separators so `acme`, `/acme` and `acme/` are one claim rather than three.
-fn segments(prefix: &str) -> Vec<&str> {
+pub(crate) fn segments(prefix: &str) -> Vec<&str> {
     prefix.split('/').filter(|s| !s.is_empty()).collect()
 }
 

@@ -312,6 +312,103 @@ is refused, and Turtle is what a past read serves.
 reports, so a commit rebased or merged long after it was written counts from when
 it was written. It follows one file name, so a date before a rename finds nothing.
 
+## Active names
+
+A namespace's volume is its **active names**: the distinct names that resolved at
+least once in a month, not its registry entries, since one entry can answer for any
+number of names.
+
+| IRI | answer | |
+|---|---|---|
+| `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | `3`, or with `as=text/turtle` an observation | a past month is cacheable under its stored set; the current month is live |
+| `urn:name:stat:namespace:{prefix}` | one line per month held: `2026-11`, a tab, the count | always live |
+
+```sh
+ikigai -c 'source urn:name:stat:namespace:resmud:period:2026-11'
+# 3
+```
+
+Reading a count takes `urn:cap:name:admin:{prefix}` or the operator's root capability.
+Both faces declare the wildcard form, like administration, and check the exact grant
+before reading the registry, so a refusal does not say whether a namespace exists.
+
+**Aggregate only.** What is stored is the name and the month, and nothing about the
+request: no address, no user agent, no cookie, no per-visitor identifier.
+
+```json
+{ "period": "2026-11", "names": ["resmud/core", "resmud/core/weapon"] }
+```
+
+**What counts.** A name `urn:name:resolve` or `urn:name:document` (or its template
+`urn:name:doc:{path}`) answered for, including one answered with a redirect, however
+its path was spelled: `resmud/core` and `/resmud//core` are one name. Not counted: an
+unclaimed or retired name, anything refused (over the ceiling, no conversion), an
+`as-of` answer, which is about the past rather than this month's traffic, and
+`urn:name:docs` called directly, which takes a namespace rather than a name. Months
+are in UTC.
+
+**It cannot slow or fail a resolution**, because resolving only adds the name to a
+buffer in memory. A request could not write the store anyway, as it holds no write
+authority. A host stores the buffer by issuing `urn:name:seen-flush` on a timer, under a
+capability holding `urn:cap:name:seen-flush` and whatever its store needs. A failed
+write fails that flush, which the host logs, and the names stay buffered. A count of
+the current month includes them.
+
+| bound | |
+|---|---|
+| what a crash can lose | the names first seen since the last successful flush, at most 16,384. The standalone server flushes every 60 seconds by default |
+| names buffered | 16,384. Past it a new name is dropped, and the next flush reports how many |
+| one name | 1,024 bytes; a longer one is answered and dropped the same way |
+| one stored set | 1,000,000 names; a count at that ceiling is a floor |
+
+These are ceilings because **a client picks the names**. A hosted namespace answers
+for any path under its prefix, so `/resmud/anything` counts as a name, and a client
+can inflate a count that way, or put arbitrary text in a name. Only the namespace's
+administrator and the operator can read it.
+
+**A kernel with no clock counts nothing**, because it cannot say which month it is,
+and answers exactly as before. On a kernel with a clock, a counted answer is cacheable
+only until its month ends. The kernel answers a cached resolution without running the
+face, so a name resolved in November and cached forever would never reach December's
+count. An HTTP door still projects such an answer as `no-cache`, because it hangs from
+the registry's thread, so a remote cache keeps asking; a cache that does not ask (a CDN
+told to hold it) hides those hits, which nothing here can count.
+
+**The store is a bound IRI**, like the registry, so this crate never touches a file. A
+host binds `SEEN_TEMPLATE`, `urn:name:seen-source:namespace:{key}`, and keys it on
+`tenant_of` if it has tenants. A set lives at
+`urn:name:seen-source:namespace:{prefix}:period:{yyyy-mm}`, and the months a namespace
+holds at `urn:name:seen-source:namespace:{prefix}`. Source answers the document, or
+`NotFound` if there is none yet. Sink takes `content` and `if-match`, the content ID
+being replaced, with no `if-match` meaning none may exist yet, and compares and
+replaces as one operation or refuses with `Conflict`. With nothing bound, a count is
+refused rather than answered as zero.
+
+`space()` holds the buffer, so the counted faces are the ones it binds, `doc` at
+`urn:name:doc:{path}` now among them. `resolve()`, `document()` and `doc()` bound on
+their own count nothing.
+
+### In the standalone server
+
+`--count-names` turns it on, with the sets in `seen/` under `--root`, or under each
+tenant's directory, so that splitting a tenant off copies its counts. A background task
+holds the only write scope in the process, on that directory alone, and no request
+holds it. Without the flag the server has no clock, makes no directory, and is exactly
+the read-only server it was.
+
+**The counts are not routed.** Their reader is an administrator, and this server has
+no authenticated transport, the same reason administration is absent. On a server, read
+them from `seen/`, or through a host that embeds the module:
+
+```sh
+jq '.names | length' /srv/namespaces/seen/resmud.2026-11.json
+```
+
+A prefix's `/` is written `~2F` in the file's name. Two processes must not count into
+one directory: the file binding's compare and replace are two steps, safe only because
+one task writes. Names go to disk as a whole file rewrite, once a flush has something
+new.
+
 ## Endpoints
 
 | IRI | verb | what |
@@ -322,6 +419,9 @@ it was written. It follows one file name, so a date before a rename finds nothin
 | `urn:name:resolve` | Source | how a path resolves, or a `NotFound` naming it |
 | `urn:name:registry` | Source | every claimed namespace, as JSON |
 | `urn:name:health` | Source | what this deployment holds, and what it refuses |
+| `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
+| `urn:name:stat:namespace:{prefix}` | Source | that count for every month held |
+| `urn:name:seen-flush` | Sink | store the names resolved since the last flush |
 | `urn:name:claim` | Sink | claim a prefix nobody holds |
 | `urn:name:admin` | Sink · Delete | change how a namespace resolves · retire it |
 
@@ -332,9 +432,10 @@ pipeline citizen: `echo acme | sink urn:name:claim strategy=hosted source=…`.
 ### Conformance
 
 The module passes [`ikigai-conformance`](https://github.com/ikigai-rs/ikigai-conformance)
-— `tests/conformance.rs` walks every endpoint above and holds the five read
+— `tests/conformance.rs` walks every endpoint above and holds the six read
 faces to their `.cacheable()` marking over a threaded registry, then shows the
-same walk over a live registry reporting the downgrade on all five. What the
+same walk over a live registry reporting the downgrade on all six, and walks them
+again on a clock, with the counting on. What the
 suite cannot see is pinned by hand in the same file: a forced recomputation
 returns the same bytes; a claim overlapping a held prefix is a typed, permanent
 refusal that writes nothing; every declared output is the media type served;
@@ -379,6 +480,8 @@ build rather than of a config file someone might edit.
 | `--registry NAME` | `registry.json` | the registry file within `--root` |
 | `--cache-files` | off | cache file reads; see [Cacheability](#cacheability) |
 | `--tenant HOST` | none | answer for `HOST` from `--root/HOST`, and refuse any host not named; repeatable. See [Tenants by host](#tenants-by-host) |
+| `--count-names` | off | count the distinct names each namespace resolves per month. See [Active names](#in-the-standalone-server) |
+| `--flush-every SECONDS` | `60` | with `--count-names`, how often to store them |
 
 The public surface is two routes, plus the documentation page's two assets,
 served `routes_only` so anything else 404s before it reaches a resource:
@@ -404,7 +507,8 @@ answers the route's OpenAPI description.
 Administration is deliberately absent from it. The server holds a **read-only**
 capability jailed to `--root`, so `urn:name:claim` and `urn:name:admin` cannot be
 performed by this process however it is addressed — they belong on a local or
-authenticated transport.
+authenticated transport. `--count-names` adds one write scope, held by a background
+task and limited to `seen/`, which no request can reach.
 
 ## Known limitations
 
@@ -415,6 +519,14 @@ authenticated transport.
 - **A retired namespace answers `404`, not `410`.** The distinction — *gone* as
   against *never here* — is exactly what a tombstone exists to express, and it
   is lost at the HTTP boundary for the same reason.
+
+## 0.4.0 migration
+
+`space()` now binds `doc` at `urn:name:doc:{path}` itself, so a host should stop binding
+it: the space's own is reached first, and it is the one that counts. A kernel with a
+clock now caches `urn:name:resolve` and `urn:name:document` until the end of the month
+rather than indefinitely, and holds up to 16,384 names in memory if nothing flushes
+them. A kernel with no clock is unchanged.
 
 ## 0.3.0 migration
 
@@ -428,7 +540,7 @@ conformance now checks DATATYPES and FAILURES by default.
 
 **Built and walked clean by `ikigai-conformance`:** the registry, the claim rule,
 resolution, capability-scoped administration, the HTML documentation face, content
-negotiation, limits and cacheability.
+negotiation, limits, cacheability and active names.
 
 **On crates.io** as `ikigai-name` (0.2.x): `cargo add ikigai-name` to embed it,
 or `cargo install --locked ikigai-name --features server` for the standalone
@@ -436,7 +548,8 @@ or `cargo install --locked ikigai-name --features server` for the standalone
 points at; embedded, a host binds `ikigai_name::space()` and nothing else.
 
 **Built but not yet servable as it stands:** [as-of resolution](#as-of-a-date),
-which needs a file-at-a-commit resource from `ikigai-repo`.
+which needs a file-at-a-commit resource from `ikigai-repo`. Over HTTP, the
+[active-name counts](#active-names), which need an authenticated transport.
 
 **Not built**, and a permanence promise is weaker without them: signed redirect
 provenance and succession, and peer mirroring.
@@ -444,7 +557,7 @@ provenance and succession, and peer mirroring.
 ## Accessibility
 
 [ACCESSIBILITY.md](ACCESSIBILITY.md) says what this module emits that people read (the
-documentation page, its errors, the server's terminal text), the rules that output follows, what
+documentation page, its errors, the counts, the server's terminal text), the rules that output follows, what
 is tested, the known limitations, and how to report a barrier.
 
 ## License

@@ -1,4 +1,4 @@
-//! The module recipe as one test: `ikigai-conformance` walks the eight endpoints
+//! The module recipe as one test: `ikigai-conformance` walks the twelve endpoints
 //! [`ikigai_name::space`] binds and reports every violation at once.
 //!
 //! ## The registry is a fixture — and it decides what is cacheable
@@ -11,12 +11,12 @@
 //! as the registry resource — a claim this file pins in both directions:
 //!
 //! - **Threaded** ([`RegistryStore`] served `.cacheable()` under its own IRI, as
-//!   an `ikigai-fs` cacheable mount or a watched file would): the five read faces
+//!   an `ikigai-fs` cacheable mount or a watched file would): the six read faces
 //!   are declared `cacheable` and held to a cache hit under the registry's thread
 //!   ([`conforms`]).
 //! - **Live** (the same store served uncacheable, as a file read with no watcher
 //!   is): undeclared, the walk is clean; declared, the suite reports the downgrade
-//!   on all five and nothing else ([`over_a_live_registry_nothing_is_cached`]) —
+//!   on all six and nothing else ([`over_a_live_registry_nothing_is_cached`]) —
 //!   the only way the ~2000× incident becomes visible, the types being identical.
 //!
 //! The half the suite cannot see (conformance PENDING #64): the probe's second
@@ -78,13 +78,16 @@ use ikigai_core::{
     Result as CoreResult, Space, UriTemplate, Verb,
 };
 use ikigai_name::admin::admin_scope;
-use ikigai_name::{Registry, Strategy, CAP_ADMIN_ANY, CAP_CLAIM, REGISTRY_IRI};
+use ikigai_name::{Registry, Strategy, CAP_ADMIN_ANY, CAP_CLAIM, REGISTRY_IRI, SEEN_TEMPLATE};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
+const SEEN_PREFIX: &str = "urn:name:seen-source:namespace:";
+const SEEN_WRITE: &str = "urn:cap:conformance:seen-write";
 
-/// The eight endpoints `space()` binds, by description id (which here equals
+/// The twelve endpoints `space()` binds, by description id (which here equals
 /// `name()` — PENDING #57) and IRI.
 const REGISTRY: &str = "registry";
 const RESOLVE: &str = "resolve";
@@ -94,6 +97,9 @@ const DOCS: &str = "docs";
 const STYLE: &str = "style";
 const DOCUMENT: &str = "document";
 const HEALTH: &str = "health";
+const COUNT: &str = "active-name-count";
+const REPORT: &str = "namespace-report";
+const FLUSH: &str = "seen-flush";
 
 const REGISTRY_FACE: &str = "urn:name:registry";
 const RESOLVE_IRI: &str = "urn:name:resolve";
@@ -104,18 +110,27 @@ const STYLE_IRI: &str = ikigai_name::docs::STYLE_IRI;
 const DOCUMENT_IRI: &str = "urn:name:document";
 const HEALTH_IRI: &str = "urn:name:health";
 
-/// The five read faces, every one `.cacheable()` and none with a thread of its
+/// The six read faces, every one `.cacheable()` and none with a thread of its
 /// own: exactly as cacheable as the registry (and the vocabulary) they read.
-const READ_FACES: [&str; 5] = [REGISTRY, RESOLVE, DOCS, DOCUMENT, HEALTH];
+const READ_FACES: [&str; 6] = [REGISTRY, RESOLVE, DOCS, DOCUMENT, DOC, HEALTH];
 
 /// Where the fixtures bind, doubling as the golden threads they name.
 const VOCAB_IRI: &str = "urn:conformance:vocab";
 const SPARQL_IRI: &str = "urn:sparql:select";
 
-/// The template the standalone server binds `doc` at, beside the exact IRI.
+/// The template `space()` binds `doc` at, beside the exact IRI.
 use ikigai_name::DOC_TEMPLATE;
 /// The id of the entry bound there: `document`'s handler, its own description.
 const DOC: &str = "doc";
+const DOC_IRI: &str = "urn:name:doc:resmud/core";
+
+/// A month in the past of the clock [`conforms_on_a_clock`] walks under, whose stored
+/// set the walk's count reads.
+const PAST: &str = "2026-01";
+const COUNT_IRI: &str = "urn:name:stat:namespace:resmud:period:2026-01";
+const REPORT_IRI: &str = "urn:name:stat:namespace:resmud";
+const SEEN_SET: &str = r#"{"period":"2026-01","names":["resmud/core","resmud/weapon"]}"#;
+const SEEN_PERIODS: &str = r#"{"periods":["2026-01"]}"#;
 
 /// Two namespaces: one hosted (what the read faces resolve) and one redirect
 /// (what `admin`'s probes rewrite, so the hosted one is untouched by the walk).
@@ -216,6 +231,98 @@ impl Endpoint for RegistryStore {
                     .input(
                         ArgSpec::new("content")
                             .summary("the whole registry, as JSON")
+                            .class(XSD_STRING),
+                    )
+                    .output("text/plain"),
+            )
+    }
+}
+
+/// The store a host binds at `SEEN_TEMPLATE`, walked like the registry's: readable, and
+/// writable through `content` under its own capability. `if-match` is compared when it
+/// is sent, as a flush always does; the strict contract is held in
+/// `tests/active_names.rs`, and the walk's own Sink sends a fixture with no token.
+struct SeenStore {
+    docs: Mutex<HashMap<String, String>>,
+}
+
+impl SeenStore {
+    fn seeded() -> SeenStore {
+        let mut docs = HashMap::new();
+        docs.insert(format!("{SEEN_PREFIX}resmud"), SEEN_PERIODS.to_string());
+        docs.insert(
+            format!("{SEEN_PREFIX}resmud:period:{PAST}"),
+            SEEN_SET.to_string(),
+        );
+        SeenStore {
+            docs: Mutex::new(docs),
+        }
+    }
+}
+
+#[async_trait]
+impl Endpoint for SeenStore {
+    async fn invoke(&self, inv: &Invocation<'_>) -> CoreResult<Representation> {
+        let iri = inv.request.target.as_str().to_string();
+        let mut docs = self.docs.lock().expect("seen lock");
+        let served = |doc: &str| {
+            Representation::new(ReprType::new("application/json"), doc.as_bytes().to_vec())
+        };
+        if inv.request.verb == Verb::Sink {
+            if let Ok(expected) = inv.inline_str("if-match") {
+                let current = docs
+                    .get(&iri)
+                    .map(|doc| served(doc).content_id().to_string());
+                if current.as_deref() != Some(expected) {
+                    return Err(Error::Conflict(format!("{iri} changed; read it again")));
+                }
+            }
+            docs.insert(iri, inv.inline_str("content")?.to_string());
+            return Ok(Representation::new(
+                ReprType::new("text/plain"),
+                b"stored".to_vec(),
+            ));
+        }
+        match docs.get(&iri) {
+            Some(doc) => Ok(served(doc).cacheable().depends_on(iri)),
+            None => Err(Error::NotFound(format!("{iri} holds nothing yet"))),
+        }
+    }
+
+    fn name(&self) -> &str {
+        "seen-source"
+    }
+
+    fn describe(&self) -> Description {
+        let key = || {
+            ArgSpec::new("key")
+                .summary("the namespace, and the period if it is a set")
+                .binding()
+                .class(XSD_STRING)
+        };
+        Description::new("seen-source")
+            .title("Conformance seen-name store")
+            .summary("The names a namespace resolved, served as a kernel resource for the walk.")
+            .action(
+                ActionSpec::new(Verb::Source)
+                    .summary("a stored set")
+                    .input(key())
+                    .output("application/json"),
+            )
+            .action(
+                ActionSpec::new(Verb::Sink)
+                    .summary("conditionally replace a stored set")
+                    .requires(SEEN_WRITE)
+                    .input(key())
+                    .input(
+                        ArgSpec::new("if-match")
+                            .summary("the content ID of the representation being replaced")
+                            .optional()
+                            .class(XSD_STRING),
+                    )
+                    .input(
+                        ArgSpec::new("content")
+                            .summary("the whole set, as JSON")
                             .class(XSD_STRING),
                     )
                     .output("text/plain"),
@@ -328,24 +435,20 @@ impl World {
     }
 }
 
-/// `threaded` selects the store's kind (see the file docs); `template` also
-/// binds `doc` at the server's `urn:name:doc:{path}`; `engine` binds
+/// `threaded` selects the store's kind (see the file docs); `engine` binds
 /// `ikigai-sparql` in place of the stand-in.
-fn world_with(threaded: bool, template: bool, engine: bool) -> World {
+fn world_with(threaded: bool, engine: bool) -> World {
     let registry = Arc::new(RwLock::new(REGISTRY_JSON.to_string()));
     let vocabulary = Arc::new(RwLock::new(VOCAB.to_string()));
     let writes = Arc::new(Mutex::new(Vec::new()));
     let registry_reads = Arc::new(AtomicUsize::new(0));
     let sparql_calls = Arc::new(AtomicUsize::new(0));
 
-    let mut space = ikigai_name::space();
-    if template {
-        space = space.bind(
-            UriTemplate::parse(DOC_TEMPLATE).expect("a valid template"),
-            ikigai_name::doc(),
-        );
-    }
-    let space = space
+    let space = ikigai_name::space()
+        .bind(
+            UriTemplate::parse(SEEN_TEMPLATE).expect("a valid template"),
+            SeenStore::seeded(),
+        )
         .bind(
             Exact::new(REGISTRY_IRI),
             RegistryStore {
@@ -382,7 +485,7 @@ fn world_with(threaded: bool, template: bool, engine: bool) -> World {
 }
 
 fn world(threaded: bool) -> World {
-    world_with(threaded, false, false)
+    world_with(threaded, false)
 }
 
 // --- requests -----------------------------------------------------------------
@@ -406,6 +509,7 @@ fn read_request(id: &str) -> Request {
         RESOLVE => request(Verb::Source, RESOLVE_IRI, &[("path", "resmud/core")]),
         DOCS => request(Verb::Source, DOCS_IRI, &[("prefix", "resmud")]),
         DOCUMENT => request(Verb::Source, DOCUMENT_IRI, &[("path", "resmud/core")]),
+        DOC => request(Verb::Source, DOC_IRI, &[]),
         HEALTH => request(Verb::Source, HEALTH_IRI, &[]),
         other => panic!("not a read face: {other}"),
     }
@@ -436,7 +540,7 @@ fn text(repr: &Representation) -> String {
 fn suite() -> Suite {
     Suite::new()
         // `space()` is configuration-free, so it names itself (SPACE-NAME): two
-        // calls claim `urn:iki:space:name` over the same eight doors.
+        // calls claim `urn:iki:space:name` over the same twelve doors.
         .self_named_space("name", ikigai_name::space)
         .fixture(Fixture::new(RESOLVE, Verb::Source).arg("path", "resmud/core"))
         .fixture(
@@ -446,7 +550,28 @@ fn suite() -> Suite {
             // templated face is `urn:name:doc:{path}`, a different entry.
             Fixture::new(DOCUMENT, Verb::Source).arg("path", "resmud/core"),
         )
+        .fixture(Fixture::new(DOC, Verb::Source).binding("path", "resmud/core"))
         .fixture(Fixture::new(DOCS, Verb::Source).arg("prefix", "resmud"))
+        // The counts: their only arguments are the IRI's own.
+        .fixture(
+            Fixture::new(COUNT, Verb::Source)
+                .binding("prefix", "resmud")
+                .binding("period", PAST)
+                .capability(Capability::scoped([admin_scope("resmud")])),
+        )
+        .fixture(
+            Fixture::new(REPORT, Verb::Source)
+                .binding("prefix", "resmud")
+                .capability(Capability::scoped([admin_scope("resmud")])),
+        )
+        // The store a host binds. Its Sink is walked with what it already holds, so the
+        // set the walk's count reads is the same before and after.
+        .fixture(Fixture::new("seen-source", Verb::Source).binding("key", "resmud:period:2026-01"))
+        .fixture(
+            Fixture::new("seen-source", Verb::Sink)
+                .binding("key", "resmud:period:2026-01")
+                .arg("content", SEEN_SET),
+        )
         // The documentation stylesheet reads nothing: a pure function of `theme`
         // (ledger #2737), so cacheable under its own name with nothing to cut.
         .pure(STYLE)
@@ -497,18 +622,19 @@ fn declared(suite: Suite) -> Suite {
     READ_FACES.iter().fold(suite, |s, id| s.cacheable(*id))
 }
 
-/// The walk saw the eight module endpoints and the three fixtures, skipped
+/// The walk saw the twelve module endpoints and the four fixtures, skipped
 /// no checks (including DATATYPES and FAILURES), and opted out only the fixture
-/// store's Sink. An eighth module endpoint bound without a line here would be
+/// store's Sink. A thirteenth module endpoint bound without a line here would be
 /// held to a weaker standard.
 fn assert_shape(report: &Report) {
     assert_eq!(
-        report.endpoints, 11,
-        "eight module endpoints, three fixtures: {report}"
+        report.endpoints, 16,
+        "twelve module endpoints, four fixtures: {report}"
     );
-    // registry, resolve, docs, style, document, health: one Source each; claim: one Sink;
-    // admin: Sink + Delete; the store: Source + Sink; vocab and sparql: one each.
-    assert_eq!(report.actions, 13, "{report}");
+    // registry, resolve, docs, style, document, doc, health, count, report: one Source
+    // each; claim and flush: one Sink each; admin: Sink + Delete; the two stores: Source +
+    // Sink each; vocab and sparql: one each.
+    assert_eq!(report.actions, 19, "{report}");
     assert_eq!(
         report.checks.skipped().count(),
         0,
@@ -522,16 +648,34 @@ fn assert_shape(report: &Report) {
     assert!(report.declared.namespaces.is_empty(), "{report}");
 }
 
-/// Over a cacheable registry every check observed every action: in particular
-/// BODIES compared each Source's `invoke` with its `invoke_body` and held the
-/// body collect one byte short to `OverBudget`. Without [`World::walk`]'s
+/// Over a cacheable registry every check observed every action but `live`: in
+/// particular BODIES compared each Source's `invoke` with its `invoke_body` and held
+/// the body collect one byte short to `OverBudget`. Without [`World::walk`]'s
 /// `body_space` BODIES would list every Source here instead, so the wiring
-/// cannot silently fall off.
+/// cannot silently fall off. What is left is BODIES declining the faces that are
+/// uncacheable by design, because two calls cannot establish that the methods agree.
+///
+/// And OUTPUTS cannot observe the flush: the walk fires a Sink only through `content`,
+/// which it has no use for. `the_flush_serves_what_it_declares` observes it by hand.
+fn assert_only_unprobed(report: &Report, live: &[&str]) {
+    let mut unprobed: Vec<&str> = report
+        .unprobed
+        .iter()
+        .filter(|u| !(u.endpoint == FLUSH && u.check == Check::Outputs))
+        .map(|u| {
+            assert_eq!(u.check, Check::Bodies, "{report}");
+            assert_eq!(u.verb, Verb::Source, "{report}");
+            assert!(u.reason.contains("uncacheable"), "{report}");
+            u.endpoint.as_str()
+        })
+        .collect();
+    unprobed.sort_unstable();
+    assert_eq!(unprobed, live, "{report}");
+}
+
+/// With no clock neither count can say a month is over, so both are live.
 fn assert_nothing_unprobed(report: &Report) {
-    assert!(
-        report.unprobed.is_empty(),
-        "every action probed by every check: {report}"
-    );
+    assert_only_unprobed(report, &[COUNT, REPORT]);
 }
 
 /// Over a live registry BODIES rightly declines every Source but the pure
@@ -541,6 +685,7 @@ fn assert_unprobed_only_live_bodies(report: &Report) {
     let mut unprobed: Vec<&str> = report
         .unprobed
         .iter()
+        .filter(|u| !(u.endpoint == FLUSH && u.check == Check::Outputs))
         .map(|u| {
             assert_eq!(u.check, Check::Bodies, "{report}");
             assert_eq!(u.verb, Verb::Source, "{report}");
@@ -550,7 +695,7 @@ fn assert_unprobed_only_live_bodies(report: &Report) {
         .collect();
     unprobed.sort_unstable();
     let mut expected = READ_FACES.to_vec();
-    expected.extend(["registry-source", "vocab"]);
+    expected.extend(["registry-source", "vocab", COUNT, REPORT]);
     expected.sort_unstable();
     assert_eq!(unprobed, expected, "{report}");
 }
@@ -643,7 +788,7 @@ fn conforms() {
 /// uncacheable — the effective expiry is the registry's — so every read
 /// re-reads the registry and nothing is ever served from the cache. Undeclared,
 /// that is correct and the walk is clean; DECLARED, the suite reports the
-/// downgrade on all five and nothing else.
+/// downgrade on all six and nothing else.
 #[test]
 fn over_a_live_registry_nothing_is_cached() {
     let w = world(false);
@@ -1492,20 +1637,9 @@ fn errors_carry_no_registry_body() {
 /// contract, so the action is undrivable"), and this test pinned that finding
 /// (ledger #194). Now the walk is clean.
 ///
-/// ⚠ The binding fixture lives HERE, not in `suite()`: it is meaningful only in
-/// the world that binds the template. In every other world nothing is bound at
-/// `urn:name:doc:{path}`, and DECLARATIONS would rightly report a `doc` fixture
-/// as inert. Keep the two worlds' fixtures separate.
 #[test]
 fn bound_at_the_servers_template() {
-    let w = world_with(true, true, false);
-    let suite = declared(stand_in_suite())
-        .cacheable(DOC)
-        .fixture(Fixture::new(DOC, Verb::Source).binding("path", "resmud/core"));
-    let report = w.walk(suite);
-    eprintln!("[threaded registry, doc also bound at {DOC_TEMPLATE}]\n{report}");
-    assert!(report.is_clean(), "{report}");
-    assert_nothing_unprobed(&report);
+    let w = world_with(true, false);
     // The entry works: the binding carries the path, as the server relies on.
     let repr = issue(
         &w.kernel,
@@ -1526,11 +1660,60 @@ fn bound_at_the_servers_template() {
             .any(|m| m.id == DOC && m.endpoint == DOC_TEMPLATE && m.verb == Verb::Source),
         "the template entry is offered: {offered:?}"
     );
-    assert_eq!(
-        report.endpoints, 12,
-        "the exact entry, the template entry, the rest: {report}"
+}
+
+#[test]
+fn the_flush_serves_what_it_declares() {
+    let w = world(true);
+    let flushed = issue(
+        &w.kernel,
+        request(Verb::Sink, ikigai_name::FLUSH_IRI, &[]),
+        &Capability::scoped([ikigai_name::CAP_FLUSH]),
+    )
+    .unwrap();
+    assert_eq!(flushed.repr_type.media_type, "text/plain");
+    assert_eq!(text(&flushed), "names stored: 0, dropped: 0\n");
+}
+
+/// The walk with the counting on: a clock, so every counted face is cacheable until its
+/// month ends rather than forever, and a past month's count is held to a cache hit under
+/// its atom's thread and read through BODIES. BODIES declines the report, live by
+/// design, and the faces that counted, whose answers now carry a deadline; the walks
+/// with no clock hold those three to it. The walk's own resolutions land in the current month, so its flush writes a real set.
+#[test]
+fn conforms_on_a_clock() {
+    let w = world(true);
+    let kernel = Kernel::new(Arc::clone(&w.root))
+        .with_clock(Arc::new(ikigai_core::FixedClock::at(1_794_700_800_000)));
+    let report = declared(stand_in_suite())
+        .cacheable(COUNT)
+        .live(REPORT)
+        .body_space(Arc::clone(&w.root))
+        .run_blocking(&kernel);
+    eprintln!("[threaded registry, on a clock]\n{report}");
+    assert!(report.is_clean(), "{report}");
+    assert_only_unprobed(&report, &[DOC, DOCUMENT, REPORT, RESOLVE]);
+
+    let count = issue(
+        &kernel,
+        request(Verb::Source, COUNT_IRI, &[]),
+        &Capability::root(),
+    )
+    .unwrap();
+    assert_eq!(text(&count), "2\n");
+    assert_eq!(count.expiry, Expiry::Never);
+    let held = issue(
+        &kernel,
+        request(Verb::Source, REPORT_IRI, &[]),
+        &Capability::root(),
+    )
+    .unwrap();
+    assert!(text(&held).starts_with("2026-01\t2\n"), "{}", text(&held));
+    assert!(
+        text(&held).contains("\n2026-11\t"),
+        "the walk's own resolutions were counted: {}",
+        text(&held)
     );
-    assert_eq!(report.actions, 14, "{report}");
 }
 
 /// The same suite over the real engine: the docs face's terms come from a real
@@ -1552,7 +1735,7 @@ fn bound_at_the_servers_template() {
 /// waiving them, so the fix arriving is what turned it back to `is_clean()`.
 #[test]
 fn conforms_over_the_real_engine() {
-    let w = world_with(true, false, true);
+    let w = world_with(true, true);
     let forms = [
         ("sparql-select", "SELECT ?s WHERE { ?s ?p ?o } LIMIT 1"),
         ("sparql-ask", "ASK { ?s ?p ?o }"),
@@ -1575,8 +1758,8 @@ fn conforms_over_the_real_engine() {
     assert!(report.is_clean(), "{report}");
     assert_nothing_unprobed(&report);
     assert_eq!(
-        report.endpoints, 14,
-        "eight, two fixtures, four forms: {report}"
+        report.endpoints, 19,
+        "twelve, three fixtures, four forms: {report}"
     );
 
     // The page is real: every term the vocabulary defines, none it does not.
@@ -1590,7 +1773,7 @@ fn conforms_over_the_real_engine() {
 /// and a cut, the page documents the new term.
 #[test]
 fn the_page_follows_the_vocabulary_through_the_real_engine() {
-    let w = world_with(true, false, true);
+    let w = world_with(true, true);
     let root = Capability::root();
     let first = issue(&w.kernel, read_request(DOCS), &root).unwrap();
     assert_ne!(
