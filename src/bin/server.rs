@@ -39,6 +39,15 @@
 //! `https://iriref.org/resmud/core#Weapon`, and the resolver has to be reachable
 //! at exactly that path.
 //!
+//! ## Counting names, if asked to
+//!
+//! With `--count-names`, each name resolved is counted per namespace and month
+//! ([`ikigai_name::stat`]), in `seen/` beside the registry, or in each tenant's
+//! `seen/` so that a split still copies its counts. A background task holds the only
+//! write scope in this process, on that directory alone, and no request holds it. The
+//! counts are not routed: their reader is an administrator, and this server has no
+//! authenticated transport, the same reason administration is absent.
+//!
 //! ## Tenants, by `Host`
 //!
 //! With `--tenant HOST` (repeated), each host is a separate set of identifiers,
@@ -58,16 +67,18 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use ikigai_core::{
-    AsyncFnEndpoint, Body, Capability, Description, Endpoint, EndpointSpace, Error, Exact,
-    Invocation, InvokeFuture, Iri, Kernel, Representation, Result, UriTemplate, Verb,
+    ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Body, Capability, Description, Endpoint,
+    EndpointSpace, Error, Exact, Invocation, InvokeFuture, Iri, Kernel, Representation, Request,
+    Result, SystemClock, UriTemplate, Verb,
 };
 use ikigai_fs::FileEndpoint;
 use ikigai_name::docs::{HTMX_PATH, STYLE_IRI, STYLE_PATH};
 use ikigai_name::tenant::{normalize_host, tenant_of, tenant_scope};
-use ikigai_name::{DOC_TEMPLATE, REGISTRY_IRI};
+use ikigai_name::{CAP_FLUSH, FLUSH_IRI, REGISTRY_IRI, SEEN_TEMPLATE};
 use ikigai_web::{fixed_cap, AdmitFn, CapFn, EdgeConfig, HttpRequest, Refusal, Route, RouteTable};
 
 /// What this host was told to do. Flags and a config root only — no environment
@@ -78,7 +89,12 @@ struct Options {
     registry: String,
     cache_files: bool,
     tenants: Vec<String>,
+    count_names: bool,
+    flush_every: Option<u64>,
 }
+
+/// How often names go to disk by default, which is also the most a crash can lose.
+const FLUSH_EVERY_SECONDS: u64 = 60;
 
 fn usage() -> ! {
     eprintln!(
@@ -94,7 +110,11 @@ fn usage() -> ! {
                             editor is not)\n  \
            --tenant HOST    answer for HOST from the directory --root/HOST, and\n                   \
                             refuse any host not named; repeat for each host\n                   \
-                            (default: one set of namespaces in --root, for any host)\n"
+                            (default: one set of namespaces in --root, for any host)\n  \
+           --count-names    count the distinct names each namespace resolves per\n                   \
+                            month, in seen/ under --root or each tenant's directory\n  \
+           --flush-every SECONDS\n                   \
+                            with --count-names, how often to store them (default 60)\n"
     );
     std::process::exit(2)
 }
@@ -105,6 +125,8 @@ fn options() -> Options {
     let mut registry = "registry.json".to_string();
     let mut cache_files = false;
     let mut tenants = Vec::new();
+    let mut count_names = false;
+    let mut flush_every = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -118,6 +140,20 @@ fn options() -> Options {
             "--registry" => registry = value(),
             "--cache-files" => cache_files = true,
             "--tenant" => tenants.push(value()),
+            "--count-names" => count_names = true,
+            "--flush-every" => {
+                let seconds = value();
+                match seconds.parse() {
+                    Ok(seconds) if seconds > 0 => flush_every = Some(seconds),
+                    _ => {
+                        eprintln!(
+                            "ikigai-name-server: --flush-every `{seconds}` is not a whole number \
+                             of seconds above zero"
+                        );
+                        std::process::exit(2)
+                    }
+                }
+            }
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("ikigai-name-server: unknown option `{other}`");
@@ -130,12 +166,18 @@ fn options() -> Options {
         eprintln!("ikigai-name-server: `{listen}` is not an address: {e}");
         std::process::exit(2)
     });
+    if flush_every.is_some() && !count_names {
+        eprintln!("ikigai-name-server: --flush-every needs --count-names");
+        std::process::exit(2)
+    }
     Options {
         listen,
         root,
         registry,
         cache_files,
         tenants,
+        count_names,
+        flush_every,
     }
 }
 
@@ -280,6 +322,133 @@ fn registry_alias(name: String) -> AsyncFnEndpoint {
     )
 }
 
+/// The file behind a key of [`SEEN_TEMPLATE`]: flat under `seen/`, though a prefix can
+/// hold `/`. Everything but letters, digits, `-` and `_` is written `~XX`, so a prefix
+/// cannot climb out or reach another's file.
+fn seen_file(key: &str) -> Option<String> {
+    let (prefix, period) = match key.split_once(":period:") {
+        Some((prefix, period)) => (prefix, period),
+        None => (key, "periods"),
+    };
+    if prefix.is_empty()
+        || !period
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+    let mut name = String::new();
+    for byte in prefix.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            name.push(char::from(byte));
+        } else {
+            name.push_str(&format!("~{byte:02X}"));
+        }
+    }
+    Some(format!("urn:file:{SEEN_DIR}/{name}.{period}.json"))
+}
+
+const SEEN_DIR: &str = "seen";
+
+/// Bind the seen sets onto files, through the kernel, as the registry is.
+///
+/// The compare and the replace are two steps, which the store's contract allows only
+/// because this process has one writer: the flush task runs one flush at a time. Two
+/// processes must not count into one directory.
+fn seen_files() -> AsyncFnEndpoint {
+    AsyncFnEndpoint::new("seen-source", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
+        Box::pin(async move {
+            let key = inv
+                .bindings
+                .get("key")
+                .ok_or_else(|| Error::MissingArgument("key".into()))?;
+            let file = seen_file(key).ok_or_else(|| Error::InvalidArgument {
+                name: "key".into(),
+                detail: format!("{key:?} names no set of names"),
+            })?;
+            let iri = Iri::parse(&file).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
+            if inv.request.verb != Verb::Sink {
+                return inv.source(&iri).await;
+            }
+            let current = match inv.source(&iri).await {
+                Ok(current) => Some(current.content_id().to_string()),
+                Err(Error::NotFound(_)) => None,
+                Err(e) => return Err(e),
+            };
+            let expected = inv.inline_str("if-match").ok().map(str::to_string);
+            if current != expected {
+                return Err(Error::Conflict(format!(
+                    "name: {file} changed since it was read; read it again"
+                )));
+            }
+            let content = inv.inline_arg("content")?.to_vec();
+            inv.issue(Request::new(Verb::Sink, iri).with_arg("content", ArgRef::Inline(content)))
+                .await
+        })
+    })
+    .with_description(
+        Description::new("seen-source")
+            .title("The names a namespace resolved, in files")
+            .action(
+                ActionSpec::new(Verb::Source)
+                    .summary("read a stored set")
+                    .requires("urn:cap:fs:read:*")
+                    .input(ArgSpec::new("key").summary("the set").binding())
+                    .output("application/json"),
+            )
+            .action(
+                ActionSpec::new(Verb::Sink)
+                    .summary("conditionally replace a stored set")
+                    .requires("urn:cap:fs:write:*")
+                    .input(ArgSpec::new("key").summary("the set").binding())
+                    .input(ArgSpec::new("content").summary("the whole set, as JSON"))
+                    .input(
+                        ArgSpec::new("if-match")
+                            .summary("the content ID being replaced; absent means none exists")
+                            .optional(),
+                    ),
+            ),
+    )
+}
+
+/// The capability that flushes into `dir`'s `seen/`, which the first write makes: the
+/// only write scope in this process.
+fn flush_capability(dir: &std::path::Path, tenant: Option<&str>) -> Capability {
+    let mut scopes = vec![
+        CAP_FLUSH.to_string(),
+        format!("urn:cap:fs:read:{}", dir.display()),
+        format!("urn:cap:fs:write:{}", dir.join(SEEN_DIR).display()),
+    ];
+    scopes.extend(tenant.and_then(tenant_scope));
+    Capability::scoped(scopes)
+}
+
+/// Store the buffered names on a timer, for as long as the server runs. A failure is
+/// logged and the names stay buffered for the next tick; no request ever waits on this.
+fn spawn_flushes(kernel: Arc<Kernel>, capabilities: Vec<Capability>, every: Duration) {
+    let target = Iri::parse(FLUSH_IRI).expect("FLUSH_IRI is a valid IRI");
+    tokio::spawn(async move {
+        let mut ticks = tokio::time::interval(every);
+        loop {
+            ticks.tick().await;
+            for capability in &capabilities {
+                let request = Request::new(Verb::Sink, target.clone());
+                match kernel.issue(request, capability).await {
+                    Ok(answer) => {
+                        if !answer.bytes.ends_with(b"dropped: 0\n") {
+                            eprint!(
+                                "ikigai-name-server: {}",
+                                String::from_utf8_lossy(&answer.bytes)
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!("ikigai-name-server: {e}"),
+                }
+            }
+        }
+    });
+}
+
 fn routes() -> RouteTable {
     let route = |pattern: &str, iri: &str| Route {
         pattern: pattern.to_string(),
@@ -319,17 +488,14 @@ async fn main() -> std::io::Result<()> {
 
     let tenants = tenant_dirs(&root, &options.tenants);
 
-    let names = ikigai_name::space()
-        // The path-carrying face, bound alongside the plain `urn:name:document`
-        // so both spellings resolve: an IRI whose tail IS the path, and the
-        // argument form the REPL and tests use. `doc()`, not `document()`: the
-        // same handler, but it declares `path` as the template's binding, which
-        // is what lets the manifold (and `?description`) drive this entry.
-        .bind(
-            UriTemplate::parse(DOC_TEMPLATE).expect("DOC_TEMPLATE is a valid template"),
-            ikigai_name::doc(),
-        )
-        .bind(Exact::new(REGISTRY_IRI), registry_alias(options.registry));
+    let mut names =
+        ikigai_name::space().bind(Exact::new(REGISTRY_IRI), registry_alias(options.registry));
+    if options.count_names {
+        names = names.bind(
+            UriTemplate::parse(SEEN_TEMPLATE).expect("SEEN_TEMPLATE is a valid template"),
+            seen_files(),
+        );
+    }
 
     // Order is the resolution order: the resolver's own names, then the engine
     // it queries through, the shared UI artifacts the page loads (compiled in:
@@ -371,7 +537,14 @@ async fn main() -> std::io::Result<()> {
             ikigai_fs::space(&root)
         }),
     ]);
-    let kernel = Arc::new(Kernel::new(Arc::new(space)));
+    // A clock only when counting: it is how a name is put in its month, and with none
+    // the module counts nothing, so a server not asked to count is exactly as it was.
+    let kernel = Kernel::new(Arc::new(space));
+    let kernel = Arc::new(if options.count_names {
+        kernel.with_clock(Arc::new(SystemClock))
+    } else {
+        kernel
+    });
 
     let mut config = EdgeConfig {
         // A path not in the table 404s before it reaches a resource, so the
@@ -390,10 +563,11 @@ async fn main() -> std::io::Result<()> {
     // honest: ikigai-fs jails every path under `root` whatever the capability
     // says, and this ACL grants read beneath that same root and nothing else.
     //
-    // There is deliberately no WRITE scope. `urn:name:claim` and
+    // There is deliberately no WRITE scope on any request. `urn:name:claim` and
     // `urn:name:admin` are Sinks, so this process physically cannot perform
     // them however it is addressed — administration belongs on a local or
-    // authenticated transport, not on the open internet.
+    // authenticated transport, not on the open internet. The one write scope
+    // this process can hold is `--count-names`' flush task's, on `seen/` alone.
     //
     // With tenants, the same two bounds hold per request: each is jailed to its
     // own directory, and its capability reads that directory alone.
@@ -415,8 +589,33 @@ async fn main() -> std::io::Result<()> {
         tenant_caps(ceilings.collect())
     };
 
+    let access = if options.count_names {
+        "read-only but for seen/"
+    } else {
+        "read-only"
+    };
+    let counting = if options.count_names {
+        let every = options.flush_every.unwrap_or(FLUSH_EVERY_SECONDS);
+        let capabilities = if tenants.is_empty() {
+            vec![flush_capability(&root, None)]
+        } else {
+            tenants
+                .iter()
+                .map(|(host, dir)| flush_capability(dir, Some(host)))
+                .collect()
+        };
+        spawn_flushes(
+            Arc::clone(&kernel),
+            capabilities,
+            Duration::from_secs(every),
+        );
+        format!(", counting names every {every}s")
+    } else {
+        String::new()
+    };
+
     eprintln!(
-        "ikigai-name-server: {} → {} (read-only, jailed to {}, file cache {})",
+        "ikigai-name-server: {} → {} ({access}, jailed to {}, file cache {}{counting})",
         options.listen,
         REGISTRY_IRI,
         jailed,

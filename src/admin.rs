@@ -115,7 +115,7 @@ fn prefix_arg(inv: &Invocation<'_>) -> Result<String> {
 /// Exactly the reserved position and no more: a `-` anywhere else (`acme-corp`,
 /// `acme/-draft`, `/-acme`) lands past it in `urn:cap:name:admin:<prefix>`, so
 /// the scope is an ordinary grant and the namespace is administrable.
-fn refuse_reserved_prefix(prefix: &str) -> Result<()> {
+pub(crate) fn refuse_reserved_prefix(prefix: &str) -> Result<()> {
     if prefix.starts_with('-') {
         return Err(Error::InvalidArgument {
             name: "prefix".into(),

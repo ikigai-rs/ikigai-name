@@ -27,11 +27,13 @@
 
 use crate::history::{as_of_arg, as_of_input, load_as_of, no_page_as_of, read_as_of, when};
 use crate::registry::Strategy;
+use crate::stat::{self, Seen};
 use crate::{load, resolve_path};
 use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation, InvokeFuture,
     Iri, Request, Verb,
 };
+use std::sync::Arc;
 
 /// Turtle: the hub representation, and the default when nothing is asked for.
 pub const CANONICAL: &str = "text/turtle";
@@ -66,9 +68,20 @@ enum PathFrom {
 /// exact IRI: the path is an argument (`path=resmud/core`, or piped content).
 ///
 /// Bind it at `urn:name:document`, as [`crate::space`] does. For the IRI whose
-/// tail IS the path, bind [`doc`] at [`DOC_TEMPLATE`] instead.
+/// tail IS the path, [`crate::space`] binds [`doc`] at [`DOC_TEMPLATE`].
+///
+/// Bound on its own this counts nothing: the counted one is what [`crate::space`]
+/// binds, because the names it sees belong to that space's buffer.
 pub fn document() -> AsyncFnEndpoint {
-    AsyncFnEndpoint::new("document", negotiate).with_description(described(PathFrom::Argument))
+    document_counted_by(None)
+}
+
+pub(crate) fn document_counted_by(seen: Option<Arc<Seen>>) -> AsyncFnEndpoint {
+    AsyncFnEndpoint::new(
+        "document",
+        move |inv: &Invocation<'_>| -> InvokeFuture<'_> { negotiate(inv, seen.clone()) },
+    )
+    .with_description(described(PathFrom::Argument))
 }
 
 /// The same negotiated document at [`DOC_TEMPLATE`], where the path is the
@@ -95,12 +108,20 @@ pub fn document() -> AsyncFnEndpoint {
 /// assert!(ikigai_name::DOC_TEMPLATE.ends_with("{path}"));
 /// ```
 pub fn doc() -> AsyncFnEndpoint {
-    AsyncFnEndpoint::new("doc", negotiate).with_description(described(PathFrom::Binding))
+    doc_counted_by(None)
+}
+
+pub(crate) fn doc_counted_by(seen: Option<Arc<Seen>>) -> AsyncFnEndpoint {
+    AsyncFnEndpoint::new("doc", move |inv: &Invocation<'_>| -> InvokeFuture<'_> {
+        negotiate(inv, seen.clone())
+    })
+    .with_description(described(PathFrom::Binding))
 }
 
 /// The handler both entries share: one face, however the path arrived.
-fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
+fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFuture<'a> {
     Box::pin(async move {
+        let seen = seen.as_deref();
         // Three ways in, most specific first. The BINDING is what lets an
         // IRI carry the path (`urn:name:doc:resmud/core` via a template
         // whose trailing variable captures the remainder, slashes and all)
@@ -142,10 +163,17 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
             Strategy::Mirror { origin } => origin.clone(),
             // The owner serves this one. Reporting where is what lets the
             // HTTP face answer with a redirect instead of guessing.
+            // The name did resolve, to the owner's node, whatever the face does
+            // with the answer, so it counts.
             Strategy::Redirect { target } => {
+                if at.is_none() {
+                    if let Some(seen) = seen {
+                        seen.note(inv, &prefix, &path);
+                    }
+                }
                 return Err(Error::Endpoint(format!(
                     "name: {prefix:?} redirects to {target}"
-                )))
+                )));
             }
             Strategy::Retired { reason } => {
                 return Err(Error::NotFound(format!(
@@ -162,7 +190,7 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
             let iri =
                 Iri::parse("urn:name:docs").map_err(|e| Error::Endpoint(format!("name: {e}")))?;
             let mut request = Request::new(Verb::Source, iri)
-                .with_arg("prefix", ArgRef::Inline(prefix.into_bytes()));
+                .with_arg("prefix", ArgRef::Inline(prefix.clone().into_bytes()));
             if let Ok(theme) = inv.inline_str("theme") {
                 request = request.with_arg("theme", ArgRef::Inline(theme.as_bytes().to_vec()));
             }
@@ -174,7 +202,8 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
                     .with_arg("term", ArgRef::Inline(term.as_bytes().to_vec()))
                     .with_arg("view", ArgRef::Inline(b"page".to_vec()));
             }
-            return inv.issue(request).await;
+            let page = inv.issue(request).await?;
+            return Ok(stat::counted(seen, inv, None, &prefix, &path, page));
         }
 
         let iri = Iri::parse(&source)
@@ -202,7 +231,14 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
         let have = bare(&stored.repr_type.media_type).to_string();
 
         if have == wanted {
-            return Ok(stored);
+            return Ok(stat::counted(
+                seen,
+                inv,
+                at.as_ref(),
+                &prefix,
+                &path,
+                stored,
+            ));
         }
 
         let Some(plan) = inv.select_transreptor(&have, &wanted) else {
@@ -229,7 +265,14 @@ fn negotiate<'a>(inv: &'a Invocation<'_>) -> InvokeFuture<'a> {
                 )
                 .await?;
         }
-        Ok(current)
+        Ok(stat::counted(
+            seen,
+            inv,
+            at.as_ref(),
+            &prefix,
+            &path,
+            current,
+        ))
     })
 }
 

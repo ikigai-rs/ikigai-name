@@ -12,7 +12,7 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-name/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-name/security/advisories/new) |
-| Last reviewed | 2026-11-03 |
+| Last reviewed | 2026-11-04 |
 
 ## What it emits that people read
 
@@ -35,9 +35,18 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   separated by a tab (`hosted`, then `urn:file:…`); `claim` and `admin` answer one line
   (`claimed <prefix>`, `updated <prefix>`, `retired <prefix>`, with the owner or the reason after
   a tab); `registry` and `health` answer JSON.
+- **The active-name counts** (`src/stat.rs`): a count answers a number and a newline (`3`); a
+  namespace's report answers one line per month, the month, a tab and the count (`2026-11`, then
+  `3`), or the sentence `name: "x" has no names counted yet`; a flush answers one labeled line
+  (`names stored: 3, dropped: 0`). Their refusals start `name:` and name what they are about
+  (`name: reading the count for "x" needs <capability>`, `name: "2026-13" is not a month: write
+  yyyy-mm, such as 2026-11`, `name: this host keeps no count of names resolved; bind <template> to
+  add it`, `name: could not store the names resolved in "x" for 2026-11: <why>; they stay buffered,
+  and 0 more were dropped since the last report`).
 - **The standalone server's terminal text** (`src/bin/server.rs`): its usage text, a startup line
-  saying where it listens, what it may read and which tenants it answers for, and refusals starting
-  `ikigai-name-server:`.
+  saying where it listens, what it may read, which tenants it answers for and whether it counts
+  names, refusals starting `ikigai-name-server:`, and with `--count-names` a line for each flush
+  that failed or dropped names.
 
 Not this repository's: the error page a browser gets when a request fails (the HTTP door's, from
 `ikigai-web`), the Turtle and other representations of a namespace (the namespace owner's
@@ -83,6 +92,10 @@ vocabulary as written.
   they say it (`raise limits.max_document_bytes in the registry`, `bind a transreptor for … to add
   it`). No error echoes the registry's body.
 - **No color in the terminal**: the server writes plain lines.
+- **An empty report says so**: a report with no months is a sentence, never an empty answer, which
+  would read as a failure. A count of nothing is `0`.
+- **A flush labels its numbers**, and a server logs only a flush worth reading: one that failed or
+  dropped names. A quiet log means counting is working.
 
 ## How it is tested
 
@@ -115,6 +128,10 @@ vocabulary as written.
   `as_of_is_refused_here_rather_than_answered_with_today` in `tests/server_http.rs` pin the words
   and status of the `as-of` refusals, including that the page refuses it rather than showing the
   current vocabulary.
+- `tests/active_names.rs` pins the words of a count, a report, an empty report, a flush and their
+  refusals (`the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`,
+  `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`), and `tests/active_names_http.rs`
+  that a failed flush reaches the server's log.
 - **Checked once by hand in a browser and with axe, not in CI** (2026-11-01, ledger #2737): the
   standalone server's page in Chromium, with axe's WCAG 2.0, 2.1 and 2.2 A and AA rules under
   light, dark and `prefers-contrast: more`, for the term list, a term chosen through htmx, a
@@ -139,7 +156,11 @@ with people or assistive technology:
 - A term's comment in the list is cut at 80 characters with no ellipsis, so a cut reads as the
   whole comment.
 - The theme chooser sits between the `<header>` and the `<main>`, outside every landmark.
-- `urn:name:resolve`, `claim` and `admin` answer tab-separated fields with no labels.
+- `urn:name:resolve`, `claim` and `admin` answer tab-separated fields with no labels, and so does a
+  namespace's report.
+- A count at its ceiling of a million names is a floor, and neither the number nor the report says
+  so. A count short of names a full buffer dropped does not say so either: only the next flush does.
+- The standalone server does not serve the counts. Someone reading them there reads JSON files.
 - The documentation page cannot show a vocabulary as of a date, so a person reading the past reads
   Turtle. The refusal says so and names what to ask for instead.
 - A date in a refusal is always in UTC, whatever offset was asked with.
@@ -171,3 +192,4 @@ you are comfortable sharing them. Anything security-sensitive goes through
 | 2026-11-01 | Terms are links that work without JavaScript, htmx swaps the region's contents, the theme chooser is a plain form, and the stylesheet and htmx are served by the standalone server (ledger #2737). Checked in a browser and with axe. |
 | 2026-11-03 | Tenants by host: the "Defined elsewhere" list, whole IRIs for references to another host, and the host refusals (ledger #3047). Not checked in a browser or with axe. |
 | 2026-11-03 | The `as-of` refusals (ledger #3049). The page itself is unchanged. |
+| 2026-11-04 | The active-name counts, report and flush, and the server's `--count-names` lines (ledger #3073). Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |

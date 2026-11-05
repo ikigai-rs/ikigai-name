@@ -32,9 +32,13 @@
 //! | `urn:name:registry` | Source | the parsed registry, as JSON |
 //! | `urn:name:resolve` | Source | how a path resolves, or an error naming why not |
 //! | `urn:name:health` | Source | what this deployment holds, and what it refuses |
+//! | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
+//! | `urn:name:stat:namespace:{prefix}` | Source | that count for every month held |
+//! | `urn:name:seen-flush` | Sink | store the names buffered since the last flush |
 //!
 //! `urn:name:registry`, `urn:name:resolve` and `urn:name:document` also answer as
 //! of a date, from the vocabulary's history rather than any cache; see [`history`].
+//! The counts are in [`stat`].
 
 #![deny(missing_docs)]
 
@@ -44,6 +48,7 @@ pub mod document;
 pub mod health;
 pub mod history;
 pub mod registry;
+pub mod stat;
 pub mod tenant;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
@@ -54,9 +59,12 @@ use history::{as_of_arg, as_of_input, load_as_of, when, AsOf};
 pub use history::{repo_history, HISTORY_IRI};
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, ContentId, Description, Error, Exact, Invocation, InvokeFuture, Iri,
-    ReprType, Representation, Result, Verb,
+    ReprType, Representation, Result, UriTemplate, Verb,
 };
 pub use registry::{ClaimError, LoadError, Namespace, Registry, Strategy};
+use stat::Seen;
+pub use stat::{CAP_FLUSH, FLUSH_IRI, SEEN_TEMPLATE};
+use std::sync::Arc;
 
 /// The capability gating administration of a namespace. Real grants attenuate
 /// it per prefix (`urn:cap:name:admin:resmud`); the bare form is the wildcard
@@ -191,8 +199,16 @@ pub fn registry_endpoint() -> AsyncFnEndpoint {
 }
 
 /// `urn:name:resolve` — how a path resolves.
+///
+/// Bound on its own this counts nothing: the counted one is what [`space`] binds,
+/// because the names it sees belong to that space's buffer.
 pub fn resolve() -> AsyncFnEndpoint {
-    AsyncFnEndpoint::new("resolve", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
+    resolve_counted_by(None)
+}
+
+fn resolve_counted_by(seen: Option<Arc<Seen>>) -> AsyncFnEndpoint {
+    AsyncFnEndpoint::new("resolve", move |inv: &Invocation<'_>| -> InvokeFuture<'_> {
+        let seen = seen.clone();
         Box::pin(async move {
             let path = path_arg(inv)?;
             let at = as_of_arg(inv)?;
@@ -217,12 +233,20 @@ pub fn resolve() -> AsyncFnEndpoint {
             // Pure in (registry, path); the kernel clamps to the registry's
             // own expiry, so a file-backed registry with a watcher caches and
             // one without does not.
-            Ok(cacheable_unless_past(
+            let answered = cacheable_unless_past(
                 Representation::new(
                     text_plain_utf8(),
                     format!("{}\t{answer}\n", found.prefix).into_bytes(),
                 ),
                 at.as_ref(),
+            );
+            Ok(stat::counted(
+                seen.as_deref(),
+                inv,
+                at.as_ref(),
+                &found.prefix,
+                &path,
+                answered,
             ))
         })
     })
@@ -254,16 +278,36 @@ pub const SPACE_ID: &str = "urn:iki:space:name";
 /// through the kernel at request time), so it names itself [`SPACE_ID`]. A host
 /// that binds more doors onto it gets an anonymous space back, since core
 /// 0.1.89, and names the result itself.
+///
+/// Each call holds its own buffer of names resolved (see [`stat`]), shared by the
+/// faces that resolve a name and the faces that report them, which is why the
+/// template face [`doc`] is bound here rather than by each host.
 pub fn space() -> ikigai_core::EndpointSpace {
+    let seen = Arc::new(Seen::default());
+    let template = |pattern: &str| UriTemplate::parse(pattern).expect("a valid template");
     ikigai_core::EndpointSpace::new()
         .bind(Exact::new("urn:name:registry"), registry_endpoint())
-        .bind(Exact::new("urn:name:resolve"), resolve())
+        .bind(
+            Exact::new("urn:name:resolve"),
+            resolve_counted_by(Some(seen.clone())),
+        )
         .bind(Exact::new("urn:name:claim"), claim())
         .bind(Exact::new("urn:name:admin"), admin())
         .bind(Exact::new("urn:name:docs"), docs())
         .bind(Exact::new(docs::STYLE_IRI), style())
-        .bind(Exact::new("urn:name:document"), document())
+        .bind(
+            Exact::new("urn:name:document"),
+            document::document_counted_by(Some(seen.clone())),
+        )
+        .bind(
+            template(DOC_TEMPLATE),
+            document::doc_counted_by(Some(seen.clone())),
+        )
         .bind(Exact::new("urn:name:health"), health())
+        // The count first: the report's trailing `{prefix}` would capture it too.
+        .bind(template(stat::COUNT_TEMPLATE), stat::count(seen.clone()))
+        .bind(template(stat::REPORT_TEMPLATE), stat::report(seen.clone()))
+        .bind(Exact::new(FLUSH_IRI), stat::flush(seen))
         .named(ikigai_core::space_iri("name"))
 }
 

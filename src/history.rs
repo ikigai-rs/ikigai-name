@@ -423,7 +423,7 @@ fn two_digits(text: &str) -> Option<i64> {
 }
 
 /// Days since 1970-01-01 of a `YYYY-MM-DD`, refusing a day the month does not have.
-fn epoch_days(text: &str) -> Option<i64> {
+pub(crate) fn epoch_days(text: &str) -> Option<i64> {
     let bytes = text.as_bytes();
     if !text.is_ascii() || bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
         return None;
@@ -455,7 +455,7 @@ fn epoch_days(text: &str) -> Option<i64> {
 
 /// An instant as `YYYY-MM-DDTHH:MM:SSZ`, or `None` outside the years 0001 to 9999,
 /// which an offset can reach from a date at either end.
-fn format_utc(seconds: i64) -> Option<String> {
+pub(crate) fn format_utc(seconds: i64) -> Option<String> {
     let days = seconds.div_euclid(86_400);
     let second_of_day = seconds.rem_euclid(86_400);
     // Civil from days, the inverse of `epoch_days`.
