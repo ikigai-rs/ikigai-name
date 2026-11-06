@@ -452,7 +452,7 @@ async fn active_names(
     Ok((names.len(), settled))
 }
 
-fn text(body: String) -> Representation {
+pub(crate) fn text_answer(body: String) -> Representation {
     Representation::new(
         ReprType::new(TEXT_PLAIN).with_param("charset", "utf-8"),
         body.into_bytes(),
@@ -516,7 +516,7 @@ pub(crate) fn count(seen: Arc<Seen>) -> AsyncFnEndpoint {
             let answer = if wanted == TEXT_TURTLE {
                 observation(inv.request.target.as_str(), prefix, period, count)?
             } else {
-                text(format!("{count}\n"))
+                text_answer(format!("{count}\n"))
             };
             Ok(if settled { answer.cacheable() } else { answer })
         }) as InvokeFuture<'_>
@@ -563,14 +563,16 @@ pub(crate) fn report(seen: Arc<Seen>) -> AsyncFnEndpoint {
             let mut periods = listed.map(|(held, _)| held.periods).unwrap_or_default();
             periods.extend(seen.pending_periods(tenant_of(inv.capability), prefix));
             if periods.is_empty() {
-                return Ok(text(format!("name: {prefix:?} has no names counted yet\n")));
+                return Ok(text_answer(format!(
+                    "name: {prefix:?} has no names counted yet\n"
+                )));
             }
             let mut lines = String::new();
             for period in periods {
                 let (count, _) = active_names(inv, &seen, prefix, &period).await?;
                 lines.push_str(&format!("{period}\t{count}\n"));
             }
-            Ok(text(lines))
+            Ok(text_answer(lines))
         }) as InvokeFuture<'_>
     })
     .with_description(
@@ -620,7 +622,7 @@ pub(crate) fn flush(seen: Arc<Seen>) -> AsyncFnEndpoint {
                 )));
             }
             seen.clear_dropped(tenant);
-            Ok(text(format!(
+            Ok(text_answer(format!(
                 "names stored: {written}, dropped: {dropped}\n"
             )))
         }) as InvokeFuture<'_>

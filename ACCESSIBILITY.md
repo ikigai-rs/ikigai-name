@@ -48,15 +48,32 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   yyyy-mm, such as 2026-11`, `name: this host keeps no count of names resolved; bind <template> to
   add it`, `name: could not store the names resolved in "x" for 2026-11: <why>; they stay buffered,
   and 0 more were dropped since the last report`).
-- **The standalone server's terminal text** (`src/bin/server.rs`): its usage text, a startup line
-  saying where it listens, what it may read, which tenants it answers for and whether it counts
-  names, refusals starting `ikigai-name-server:`, and with `--count-names` a line for each flush
-  that failed or dropped names.
+- **A namespace served from a repository** (`src/git.rs`): a refresh answers one line naming the
+  namespace, and what it did (`"acme": now serving <id>`, `"acme": unchanged, serving <id>`,
+  `"acme": refused <id>, and the last good version keeps serving: <why>`, `"acme": nothing
+  accepted: <why>`, `"acme": nothing to do: this push is to refs/heads/x, and main is served`). The
+  status answers one labeled line each (`repository: <url>, branch main, file core.ttl`, `serving:
+  <id>, since <time>`, or `serving: nothing yet`; `refused: <id>, at <time>: <why>`; `not read`
+  or `gone`, `at <time>: <why>`). Refusals start `name:` and name the namespace (`name: "acme" has
+  no version to serve yet; its administrator can read why at urn:name:git-status:acme`,
+  `name: the repository serving "acme" no longer has its file`, `name: reading what happened to
+  "acme" needs <capability>`). A registry refused for a repository names the namespace and what is
+  wrong (`the namespace "acme" cannot be claimed: its repository has the path "index.html", and only
+  a Turtle file ending .ttl is served, so that repository HTML or JavaScript never reaches this
+  origin`).
+- **The standalone server's terminal text** (`src/bin/server.rs`, `src/bin/server/git.rs`): its usage
+  text, a startup line saying where it listens, what it may read, which tenants it answers for,
+  whether it counts names and how often it reads repositories, refusals starting
+  `ikigai-name-server:`, with `--count-names` a line for each flush that failed or dropped names, and
+  with `--git` a refresh's line whenever a namespace's answer changes. The webhook's refusals are
+  sentences too (`name: this push has no signature that verifies for that namespace; ...`), and they
+  are the same whether or not the namespace exists.
 
 Not this repository's: the error page a browser gets when a request fails (the HTTP door's, from
 `ikigai-web`), the Turtle and other representations of a namespace (the namespace owner's
-documents, or a transreptor's output), and the terms' names and comments, which come from the
-vocabulary as written.
+documents, or a transreptor's output), the terms' names and comments, which come from the
+vocabulary as written, and a validator's words inside a refusal, which come from `ikigai-shacl` and
+the owner's shapes.
 
 ## The rules that output follows
 
@@ -100,6 +117,17 @@ vocabulary as written.
   refusal, and by its `match` in an answer, since the first rule of any shape is the one that
   answers. A rule's text holds no tab or newline, or the registry is refused, so an answer stays
   one line of the same fields.
+- **A repository's words never become markup**: a served namespace is Turtle or the generated page,
+  which escapes everything from the vocabulary as it always has, so a repository cannot add a script,
+  a heading or a landmark to the page, or serve a page of its own.
+- **A refusal is one line**: repository-supplied text in a reason has its control characters replaced
+  and is cut at 2,000 characters, so it cannot forge a second labeled line of the status, or bury the
+  ones after it. It lists three violations, and counts the rest.
+- **A status labels every line**, by a word at its start, so a person can find `refused:` and a screen
+  reader announces what the value is before the value. What is absent is said (`serving: nothing
+  yet`), or its line is left out, never an empty field.
+- **A log is not a stream of the same sentence**: a timer's refresh reaches the terminal when a
+  namespace's answer changes, and `unchanged` never does.
 - **No color in the terminal**: the server writes plain lines.
 - **An empty report says so**: a report with no months is a sentence, never an empty answer, which
   would read as a failure. A count of nothing is `0`.
@@ -146,6 +174,14 @@ vocabulary as written.
   refusals (`the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`,
   `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`), and `tests/active_names_http.rs`
   that a failed flush reaches the server's log.
+- `src/git.rs` pins the words of the status (`the_status_is_one_labeled_line_each`), and of a bounded,
+  one-line reason (`a_reason_is_one_bounded_line_with_no_token`). `tests/git_source.rs` pins each
+  refresh's answer and each refusal, including that the words and the token do not reach someone who
+  is not the owner (`the_reason_is_readable_by_the_owner_and_nobody_else`,
+  `a_reader_echoing_the_token_does_not_put_it_in_the_record`) and that what a repository says on the
+  documentation page is escaped (`the_page_is_generated_and_what_the_repository_says_in_it_is_escaped`).
+  `tests/git_http.rs` (with the `git` feature) pins the webhook's refusals and the same page through
+  the real binary.
 - **Checked once by hand in a browser and with axe, not in CI** (2026-11-01, ledger #2737): the
   standalone server's page in Chromium, with axe's WCAG 2.0, 2.1 and 2.2 A and AA rules under
   light, dark and `prefers-contrast: more`, for the term list, a term chosen through htmx, a
@@ -183,6 +219,17 @@ with people or assistive technology:
 - The documentation page cannot show a vocabulary as of a date, so a person reading the past reads
   Turtle. The refusal says so and names what to ask for instead.
 - A date in a refusal is always in UTC, whatever offset was asked with.
+- A refusal of a version quotes the validator, so where a shape has no `sh:message` the reader gets
+  whole IRIs (`http://www.w3.org/ns/shacl#MinCountConstraintComponent`), which are long and hard to read
+  aloud. An owner's shapes decide this, and with the subset validator a `sh:message` on a property
+  shape may not reach the report at all.
+- A version is named by a content ID, which is long and means nothing to a person until it is compared
+  with another. A file read at a branch's head does not say which commit it came from.
+- On the standalone server, the owner reads a refusal in the forge's webhook deliveries, which is that
+  forge's page rather than this module's, and on GitLab, which this door does not accept, or for a
+  refusal the timer found, nowhere. Only the operator can read `git/status.{prefix}.json` there.
+- A status on a kernel with no clock holds no times, and the standalone server has none without
+  `--count-names`.
 - A refusal for a host that is not a tenant cannot say which host would work: it names the host it
   was given and no next step, because the list of tenants is not this refusal's to disclose.
 
@@ -212,4 +259,5 @@ you are comfortable sharing them. Anything security-sensitive goes through
 | 2026-11-03 | Tenants by host: the "Defined elsewhere" list, whole IRIs for references to another host, and the host refusals (ledger #3047). Not checked in a browser or with axe. |
 | 2026-11-03 | The `as-of` refusals (ledger #3049). The page itself is unchanged. |
 | 2026-11-04 | The active-name counts, report and flush, and the server's `--count-names` lines (ledger #3073). Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
+| 2026-11-05 | A namespace served from a git repository (ledger #3074): a refresh's line, a status, their refusals, the webhook's refusals and the server's `--git` lines. Plain text and refusals only; the page is unchanged, and now also renders a repository's vocabulary, escaped. Tested as above, with no assistive technology and no browser. |
 | 2026-11-05 | A redirect's status and rewrite rules (ledger #3077): more fields in `urn:name:resolve`'s answer, and the refusals of a status or a rule. Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |

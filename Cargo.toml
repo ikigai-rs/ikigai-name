@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-name"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 # Measured 2026-10-14 (ledger #195), not guessed: on 1.87, clippy -D warnings and the
 # tests pass with and without `server`; on 1.86 the library itself fails (ikigai-core
@@ -31,6 +31,9 @@ serde_json = "1"
 # are CHECKED rather than asserted — a page a newcomer must read is the wrong
 # place to discover that "muted" meant "illegible".
 ikigai-a11y = "0.4.0"
+# The signature on a repository's push webhook, which only a shared key can make.
+hmac = "0.12"
+sha2 = "0.10"
 
 # Server-only transports and stores, released against the streams core.
 # SPARQL retains the typed missing-query refusal tested by conformance.
@@ -42,6 +45,13 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optio
 # the shared home for it, rather than a private copy. 0.4.0 is the release on core 0.2;
 # a caret on it is <0.5.0.
 ikigai-ui = { version = "0.4.0", optional = true }
+# The modules and the client behind `--git`, and only behind it (see below): an outbound
+# HTTP client, the secret store and the validator without rudof, each on core 0.2.
+ikigai-http = { version = "0.4.3", optional = true }
+ikigai-secret = { version = "0.3.0", optional = true }
+ikigai-shacl = { version = "0.5.0", default-features = false, optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
+futures-util = { version = "0.3", features = ["io"], optional = true }
 
 # --- the standalone server ---------------------------------------------------
 # Optional, so a library consumer never builds an HTTP stack or RocksDB. The
@@ -50,6 +60,9 @@ ikigai-ui = { version = "0.4.0", optional = true }
 # property of the build rather than of a config file.
 [features]
 server = ["dep:ikigai-web", "dep:ikigai-sparql", "dep:ikigai-fs", "dep:ikigai-ui", "dep:tokio"]
+# Namespaces served from git repositories. Separate, because the plain server's claim is
+# that it links no secrets and no outbound network, and that claim is about its build.
+git = ["server", "dep:ikigai-http", "dep:ikigai-secret", "dep:ikigai-shacl", "dep:reqwest", "dep:futures-util", "tokio/sync"]
 
 [[bin]]
 name = "ikigai-name-server"
@@ -75,6 +88,12 @@ name = "active_names_http"
 path = "tests/active_names_http.rs"
 required-features = ["server"]
 
+# A push, a shape's refusal and a vanished repository, through the real binary.
+[[test]]
+name = "git_http"
+path = "tests/git_http.rs"
+required-features = ["git"]
+
 [dev-dependencies]
 futures = "0.3"
 # Walk every bound endpoint, including DATATYPES, FAILURES, BODIES and
@@ -86,3 +105,10 @@ ikigai-sparql = "0.3.1"
 # because that is the line on core 0.2: 0.4.0 is on core 0.3, and ikigai-web has no
 # release on core 0.3 for the server to move with it.
 ikigai-repo = "0.3.2"
+# The real validator and secret store behind a repository-backed namespace, each on the
+# line that is on core 0.2. The validator without rudof, which it does not need here:
+# its subset refuses by name any SHACL term it does not cover.
+ikigai-shacl = { version = "0.5.0", default-features = false }
+ikigai-secret = "0.3.0"
+# forge_reader's own tests, over a canned transport.
+ikigai-http = "0.4.3"

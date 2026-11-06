@@ -11,7 +11,8 @@
 //! and `ikigai-ui` (for its vendored htmx) — and nothing else. There is no calendar, no exec, no secrets
 //! module compiled in, so a flaw in one cannot be reached from here. That is
 //! linkage-gating rather than config-gating: what this process cannot do is a
-//! property of how it was built, not of a file someone might edit.
+//! property of how it was built, not of a file someone might edit. The `git`
+//! feature is the one addition, and it is a different build (see below).
 //!
 //! ## The public surface is two routes, and the page's two assets
 //!
@@ -48,6 +49,15 @@
 //! counts are not routed: their reader is an administrator, and this server has no
 //! authenticated transport, the same reason administration is absent.
 //!
+//! ## Repositories, if asked to, and if built to
+//!
+//! With the `git` feature and `--git`, a namespace can be served from a file in a git
+//! repository ([`ikigai_name::git`]): an HTTP client, the secret store and the validator
+//! are then linked, the last good copies live in `git/` beside the registry, and a
+//! background timer and a signed `POST` to `/-/git/{prefix}` are the only things holding
+//! a write scope, on that directory alone. A request still reads, and nothing else. A
+//! binary built without the feature cannot do any of this, whatever it is told.
+//!
 //! ## Tenants, by `Host`
 //!
 //! With `--tenant HOST` (repeated), each host is a separate set of identifiers,
@@ -81,6 +91,10 @@ use ikigai_name::tenant::{normalize_host, tenant_of, tenant_scope};
 use ikigai_name::{CAP_FLUSH, FLUSH_IRI, REGISTRY_IRI, SEEN_TEMPLATE};
 use ikigai_web::{fixed_cap, AdmitFn, CapFn, EdgeConfig, HttpRequest, Refusal, Route, RouteTable};
 
+#[cfg(feature = "git")]
+#[path = "server/git.rs"]
+mod git;
+
 /// What this host was told to do. Flags and a config root only — no environment
 /// variables, which are the banned third channel.
 struct Options {
@@ -91,7 +105,18 @@ struct Options {
     tenants: Vec<String>,
     count_names: bool,
     flush_every: Option<u64>,
+    git: bool,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    git_every: Option<u64>,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    secrets: Option<PathBuf>,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    git_forges: Vec<String>,
 }
+
+/// How often repositories are read if no webhook says to, when `--git` is on.
+#[cfg(feature = "git")]
+const GIT_EVERY_SECONDS: u64 = 900;
 
 /// How often names go to disk by default, which is also the most a crash can lose.
 const FLUSH_EVERY_SECONDS: u64 = 60;
@@ -114,7 +139,18 @@ fn usage() -> ! {
            --count-names    count the distinct names each namespace resolves per\n                   \
                             month, in seen/ under --root or each tenant's directory\n  \
            --flush-every SECONDS\n                   \
-                            with --count-names, how often to store them (default 60)\n"
+                            with --count-names, how often to store them (default 60)\n  \
+           --git            serve namespaces from git repositories, with their last\n                   \
+                            good copies in git/ under --root or each tenant's\n                   \
+                            directory (needs a build with the git feature)\n  \
+           --git-every SECONDS\n                   \
+                            with --git, how often to read them if no webhook says\n                   \
+                            to (default 900)\n  \
+           --secrets DIR    with --git, a directory holding the tokens and webhook\n                   \
+                            keys, outside --root (default: the system's secret store)\n  \
+           --git-forge HOST=KIND[@API]\n                   \
+                            with --git, read repositories on HOST too; KIND is github,\n                   \
+                            gitlab or forgejo, and API is where its API is; repeatable\n"
     );
     std::process::exit(2)
 }
@@ -127,6 +163,10 @@ fn options() -> Options {
     let mut tenants = Vec::new();
     let mut count_names = false;
     let mut flush_every = None;
+    let mut git = false;
+    let mut git_every = None;
+    let mut secrets = None;
+    let mut git_forges = Vec::new();
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -154,6 +194,22 @@ fn options() -> Options {
                     }
                 }
             }
+            "--git" => git = true,
+            "--git-every" => {
+                let seconds = value();
+                match seconds.parse() {
+                    Ok(seconds) if seconds > 0 => git_every = Some(seconds),
+                    _ => {
+                        eprintln!(
+                            "ikigai-name-server: --git-every `{seconds}` is not a whole number \
+                             of seconds above zero"
+                        );
+                        std::process::exit(2)
+                    }
+                }
+            }
+            "--secrets" => secrets = Some(PathBuf::from(value())),
+            "--git-forge" => git_forges.push(value()),
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("ikigai-name-server: unknown option `{other}`");
@@ -170,6 +226,17 @@ fn options() -> Options {
         eprintln!("ikigai-name-server: --flush-every needs --count-names");
         std::process::exit(2)
     }
+    if !git && (git_every.is_some() || secrets.is_some() || !git_forges.is_empty()) {
+        eprintln!("ikigai-name-server: --git-every, --secrets and --git-forge need --git");
+        std::process::exit(2)
+    }
+    if git && !cfg!(feature = "git") {
+        eprintln!(
+            "ikigai-name-server: --git needs a build with the git feature, and this one links \
+             no HTTP client and no secret store; rebuild with --features git"
+        );
+        std::process::exit(2)
+    }
     Options {
         listen,
         root,
@@ -178,6 +245,10 @@ fn options() -> Options {
         tenants,
         count_names,
         flush_every,
+        git,
+        git_every,
+        secrets,
+        git_forges,
     }
 }
 
@@ -290,6 +361,56 @@ fn admit_tenants(hosts: Vec<String>) -> AdmitFn {
     })
 }
 
+/// How `--git` was told to read repositories, or a refusal to start.
+#[cfg(feature = "git")]
+fn git_host(options: &Options, root: &std::path::Path, tenanted: bool) -> git::GitHost {
+    let refuse = |why: String| -> ! {
+        eprintln!("ikigai-name-server: {why}");
+        std::process::exit(2)
+    };
+    let mut forges = ikigai_name::git::known_forges();
+    for text in &options.git_forges {
+        match git::parse_forge(text) {
+            Some(forge) => forges.push(forge),
+            None => refuse(format!(
+                "--git-forge `{text}` is not HOST=KIND or HOST=KIND@API, with KIND one of \
+                 github, gitlab or forgejo"
+            )),
+        }
+    }
+    let secrets: Arc<dyn ikigai_secret::Backend> = match &options.secrets {
+        Some(dir) => {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                refuse(format!("cannot make --secrets {}: {e}", dir.display()));
+            }
+            let dir = dir.canonicalize().unwrap_or_else(|e| {
+                refuse(format!("cannot resolve --secrets {}: {e}", dir.display()))
+            });
+            if let Err(why) = git::check_secrets_outside(root, &dir) {
+                refuse(why);
+            }
+            Arc::new(ikigai_secret::FileBackend::new(dir))
+        }
+        None => ikigai_secret::default_backend(),
+    };
+    git::GitHost {
+        forges,
+        secrets,
+        tenanted,
+    }
+}
+
+/// Admit what the tenants admit, and of the webhook's path only a signed push.
+#[cfg(feature = "git")]
+fn admit_pushes(host: Arc<git::GitHost>, tenants: Option<AdmitFn>) -> AdmitFn {
+    Arc::new(move |req| {
+        tenants
+            .as_ref()
+            .and_then(|admit| admit(req))
+            .or_else(|| host.admit(req))
+    })
+}
+
 /// The capability for a request: its tenant, and reading that tenant's directory.
 /// Anything else gets no authority at all, should it ever pass admission.
 fn tenant_caps(ceilings: HashMap<String, Vec<String>>) -> CapFn {
@@ -322,9 +443,21 @@ fn registry_alias(name: String) -> AsyncFnEndpoint {
     )
 }
 
-/// The file behind a key of [`SEEN_TEMPLATE`]: flat under `seen/`, though a prefix can
-/// hold `/`. Everything but letters, digits, `-` and `_` is written `~XX`, so a prefix
-/// cannot climb out or reach another's file.
+/// A prefix as part of a file's name, flat though it can hold `/`. Everything but letters,
+/// digits, `-` and `_` is written `~XX`, so a prefix cannot climb out or reach another's file.
+fn file_part(prefix: &str) -> String {
+    let mut name = String::new();
+    for byte in prefix.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            name.push(char::from(byte));
+        } else {
+            name.push_str(&format!("~{byte:02X}"));
+        }
+    }
+    name
+}
+
+/// The file behind a key of [`SEEN_TEMPLATE`]: flat under `seen/`.
 fn seen_file(key: &str) -> Option<String> {
     let (prefix, period) = match key.split_once(":period:") {
         Some((prefix, period)) => (prefix, period),
@@ -337,15 +470,10 @@ fn seen_file(key: &str) -> Option<String> {
     {
         return None;
     }
-    let mut name = String::new();
-    for byte in prefix.bytes() {
-        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
-            name.push(char::from(byte));
-        } else {
-            name.push_str(&format!("~{byte:02X}"));
-        }
-    }
-    Some(format!("urn:file:{SEEN_DIR}/{name}.{period}.json"))
+    Some(format!(
+        "urn:file:{SEEN_DIR}/{}.{period}.json",
+        file_part(prefix)
+    ))
 }
 
 const SEEN_DIR: &str = "seen";
@@ -449,7 +577,7 @@ fn spawn_flushes(kernel: Arc<Kernel>, capabilities: Vec<Capability>, every: Dura
     });
 }
 
-fn routes() -> RouteTable {
+fn routes(with_git: bool) -> RouteTable {
     let route = |pattern: &str, iri: &str| Route {
         pattern: pattern.to_string(),
         iri_template: iri.to_string(),
@@ -458,14 +586,24 @@ fn routes() -> RouteTable {
         cors: None,
         csp: None,
     };
-    RouteTable::new(vec![
-        // Most specific first: first match wins. The page's assets, at paths no
-        // namespace can claim (see the module docs).
+    // Most specific first: first match wins. The page's assets, at paths no
+    // namespace can claim (see the module docs).
+    let mut table = vec![
         route(STYLE_PATH, STYLE_IRI),
         route(HTMX_PATH, "urn:iki:ui:htmx"),
-        route("/{ns}/{doc}", "urn:name:doc:{ns}/{doc}"),
-        route("/{ns}", "urn:name:doc:{ns}"),
-    ])
+    ];
+    // A repository's push webhook, under the same `-`. Admission has refused anything
+    // here but a signed POST by the time a route is matched.
+    if with_git {
+        table.push(route(
+            "/-/git/{ns}/{doc}",
+            "urn:name:git-refresh:{ns}/{doc}",
+        ));
+        table.push(route("/-/git/{ns}", "urn:name:git-refresh:{ns}"));
+    }
+    table.push(route("/{ns}/{doc}", "urn:name:doc:{ns}/{doc}"));
+    table.push(route("/{ns}", "urn:name:doc:{ns}"));
+    RouteTable::new(table)
 }
 
 #[tokio::main]
@@ -488,23 +626,56 @@ async fn main() -> std::io::Result<()> {
 
     let tenants = tenant_dirs(&root, &options.tenants);
 
-    let mut names =
-        ikigai_name::space().bind(Exact::new(REGISTRY_IRI), registry_alias(options.registry));
+    let mut names = ikigai_name::space().bind(
+        Exact::new(REGISTRY_IRI),
+        registry_alias(options.registry.clone()),
+    );
     if options.count_names {
         names = names.bind(
             UriTemplate::parse(SEEN_TEMPLATE).expect("SEEN_TEMPLATE is a valid template"),
             seen_files(),
         );
     }
+    #[cfg(feature = "git")]
+    let git_host = options
+        .git
+        .then(|| git_host(&options, &root, !tenants.is_empty()));
+    #[cfg(feature = "git")]
+    if git_host.is_some() {
+        names = names
+            .bind(
+                Exact::new(ikigai_name::git::READ_IRI),
+                ikigai_name::git::forge_reader_for(
+                    git_host.as_ref().expect("just checked").forges.clone(),
+                ),
+            )
+            .bind(
+                UriTemplate::parse(ikigai_name::git::STORE_TEMPLATE)
+                    .expect("STORE_TEMPLATE is a valid template"),
+                git::store_files(),
+            );
+    }
 
     // Order is the resolution order: the resolver's own names, then the engine
     // it queries through, the shared UI artifacts the page loads (compiled in:
     // nothing is bound at `urn:iki:ui:dir:`), then the filesystem the resolver
     // and the engine read from.
-    let space = ikigai_core::Fallback::new(vec![
+    let mut spaces: Vec<Arc<dyn ikigai_core::Space>> = vec![
         Arc::new(names),
         Arc::new(ikigai_sparql::space()),
         Arc::new(ikigai_ui::space()),
+    ];
+    #[cfg(feature = "git")]
+    if let Some(host) = &git_host {
+        let transport = git::Transport::new().unwrap_or_else(|e| {
+            eprintln!("ikigai-name-server: cannot make an HTTP client: {e}");
+            std::process::exit(2)
+        });
+        spaces.push(Arc::new(ikigai_http::space(Arc::new(transport))));
+        spaces.push(Arc::new(ikigai_secret::space(host.secrets.clone())));
+        spaces.push(Arc::new(ikigai_shacl::space()));
+    }
+    spaces.push(
         // ★ File reads are uncacheable by DEFAULT, and that default is right.
         //
         // A golden thread is cut by a write THROUGH the kernel; a `git pull` or
@@ -536,7 +707,8 @@ async fn main() -> std::io::Result<()> {
         } else {
             ikigai_fs::space(&root)
         }),
-    ]);
+    );
+    let space = ikigai_core::Fallback::new(spaces);
     // A clock only when counting: it is how a name is put in its month, and with none
     // the module counts nothing, so a server not asked to count is exactly as it was.
     let kernel = Kernel::new(Arc::new(space));
@@ -551,7 +723,7 @@ async fn main() -> std::io::Result<()> {
         // route file is the whole public surface rather than a convenience over
         // one.
         routes_only: true,
-        routes: routes(),
+        routes: routes(options.git),
         ..EdgeConfig::default()
     };
 
@@ -589,10 +761,59 @@ async fn main() -> std::io::Result<()> {
         tenant_caps(ceilings.collect())
     };
 
-    let access = if options.count_names {
-        "read-only but for seen/"
-    } else {
-        "read-only"
+    #[cfg(feature = "git")]
+    let (cap_fn, repositories) = match git_host {
+        None => (cap_fn, String::new()),
+        Some(host) => {
+            let host = Arc::new(host);
+            config.admit_fn = Some(admit_pushes(host.clone(), config.admit_fn.take()));
+            let sites = if tenants.is_empty() {
+                vec![git::Site {
+                    dir: root.clone(),
+                    tenant: None,
+                }]
+            } else {
+                tenants
+                    .iter()
+                    .map(|(tenant, dir)| git::Site {
+                        dir: dir.clone(),
+                        tenant: Some(tenant.clone()),
+                    })
+                    .collect()
+            };
+            let every = options.git_every.unwrap_or(GIT_EVERY_SECONDS);
+            git::spawn_refreshes(
+                Arc::clone(&kernel),
+                host.clone(),
+                sites,
+                Duration::from_secs(every),
+            );
+            let dirs = tenants.clone();
+            let root = root.clone();
+            let ordinary = cap_fn;
+            let with_pushes: CapFn = Arc::new(move |req| {
+                let dir = if host.tenanted {
+                    request_host(req).and_then(|tenant| dirs.get(&tenant))
+                } else {
+                    Some(&root)
+                };
+                dir.and_then(|dir| host.push_capability(req, dir))
+                    .unwrap_or_else(|| ordinary(req))
+            });
+            (
+                with_pushes,
+                format!(", reading repositories every {every}s"),
+            )
+        }
+    };
+    #[cfg(not(feature = "git"))]
+    let repositories = String::new();
+
+    let access = match (options.count_names, options.git) {
+        (true, true) => "read-only but for seen/ and git/",
+        (true, false) => "read-only but for seen/",
+        (false, true) => "read-only but for git/",
+        (false, false) => "read-only",
     };
     let counting = if options.count_names {
         let every = options.flush_every.unwrap_or(FLUSH_EVERY_SECONDS);
@@ -615,7 +836,7 @@ async fn main() -> std::io::Result<()> {
     };
 
     eprintln!(
-        "ikigai-name-server: {} → {} ({access}, jailed to {}, file cache {}{counting})",
+        "ikigai-name-server: {} → {} ({access}, jailed to {}, file cache {}{counting}{repositories})",
         options.listen,
         REGISTRY_IRI,
         jailed,

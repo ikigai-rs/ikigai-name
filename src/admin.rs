@@ -38,7 +38,9 @@
 //! prefix to a new owner would let them answer for IRIs the previous owner
 //! minted, which is the one failure a permanence service must not have.
 
-use crate::registry::{ClaimError, Namespace, RedirectStatus, Registry, Rule, Strategy};
+use crate::registry::{
+    ClaimError, Namespace, RedirectStatus, Registry, Repository, Rule, Strategy,
+};
 use crate::rules::STATUS_CHOICES;
 use crate::{load_versioned, REGISTRY_IRI};
 use ikigai_core::{
@@ -218,6 +220,33 @@ fn status_spec() -> ArgSpec {
         .class(XSD_STRING)
 }
 
+/// The optional `repository` of a hosted or mirror namespace, as the JSON object the
+/// registry holds. It is checked with the rest of the entry, by the rule a file is held to.
+fn repository_arg(inv: &Invocation<'_>) -> Result<Option<Repository>> {
+    let Ok(raw) = inv.inline_str("repository") else {
+        return Ok(None);
+    };
+    serde_json::from_str(raw)
+        .map(Some)
+        .map_err(|e| Error::InvalidArgument {
+            name: "repository".into(),
+            detail: format!(
+                "not a JSON object with url, branch, path, shape and an optional private: {e}"
+            ),
+        })
+}
+
+fn repository_spec() -> ArgSpec {
+    ArgSpec::new("repository")
+        .summary(
+            "hosted or mirror: the git repository it is served from, as a JSON object with url, \
+             branch, path, shape and an optional private; its source or origin names \
+             urn:name:git:{prefix}. A token never goes here",
+        )
+        .optional()
+        .class(XSD_STRING)
+}
+
 fn rules_spec() -> ArgSpec {
     ArgSpec::new("rules")
         .summary(
@@ -264,6 +293,10 @@ fn claim_error(prefix: &str, error: ClaimError) -> Error {
             name: "status".into(),
             detail: format!("the namespace {prefix:?}: {bad}"),
         },
+        bad @ ClaimError::BadRepository(_) => Error::InvalidArgument {
+            name: "repository".into(),
+            detail: format!("the namespace {prefix:?}: {bad}"),
+        },
         bad @ (ClaimError::BadRule { .. } | ClaimError::NotARuleList(_)) => {
             Error::InvalidArgument {
                 name: "rules".into(),
@@ -283,6 +316,7 @@ pub fn claim() -> AsyncFnEndpoint {
         Box::pin(async move {
             let prefix = prefix_arg(inv)?;
             let strategy = strategy_from_args(inv)?;
+            let repository = repository_arg(inv)?;
             // `owner` is optional so the ordinary case needs no ceremony: the
             // claimant becomes the administrator. An operator provisioning on
             // someone else's behalf can name a different one.
@@ -298,6 +332,7 @@ pub fn claim() -> AsyncFnEndpoint {
                     prefix: prefix.clone(),
                     owner: owner.clone(),
                     strategy,
+                    repository,
                 })
                 .map_err(|e| claim_error(&prefix, e))?;
             store(inv, &registry, token).await?;
@@ -346,6 +381,7 @@ pub fn claim() -> AsyncFnEndpoint {
                     )
                     .input(status_spec())
                     .input(rules_spec())
+                    .input(repository_spec())
                     .input(
                         ArgSpec::new("origin")
                             .summary("mirror: the source of truth this copy tracks")
@@ -386,12 +422,13 @@ pub fn admin() -> AsyncFnEndpoint {
                     entry.strategy = Strategy::Retired {
                         reason: reason.clone(),
                     };
+                    entry.repository = None;
                     format!("retired {prefix}\t{reason}\n")
                 }
                 _ => {
-                    let strategy = strategy_from_args(inv)?;
-                    strategy.check().map_err(|e| claim_error(&prefix, e))?;
-                    entry.strategy = strategy;
+                    entry.strategy = strategy_from_args(inv)?;
+                    entry.repository = repository_arg(inv)?;
+                    entry.check().map_err(|e| claim_error(&prefix, e))?;
                     format!("updated {prefix}\n")
                 }
             };
@@ -436,6 +473,7 @@ pub fn admin() -> AsyncFnEndpoint {
                     )
                     .input(status_spec())
                     .input(rules_spec())
+                    .input(repository_spec())
                     .input(
                         ArgSpec::new("origin")
                             .summary("mirror: the source of truth this copy tracks")

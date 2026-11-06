@@ -35,16 +35,20 @@
 //! | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
 //! | `urn:name:stat:namespace:{prefix}` | Source | that count for every month held |
 //! | `urn:name:seen-flush` | Sink | store the names buffered since the last flush |
+//! | `urn:name:git:{prefix}` | Source | the last good copy of a repository's file |
+//! | `urn:name:git-refresh:{prefix}` | Sink | read the repository again, and accept or refuse what it finds |
+//! | `urn:name:git-status:{prefix}` | Source | what those refreshes found, for the namespace's administrator |
 //!
 //! `urn:name:registry`, `urn:name:resolve` and `urn:name:document` also answer as
 //! of a date, from the vocabulary's history rather than any cache; see [`history`].
-//! The counts are in [`stat`].
+//! The counts are in [`stat`]. A namespace served from a git repository is in [`git`].
 
 #![deny(missing_docs)]
 
 pub mod admin;
 pub mod docs;
 pub mod document;
+pub mod git;
 pub mod health;
 pub mod history;
 pub mod registry;
@@ -55,6 +59,7 @@ pub mod tenant;
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};
 pub use docs::{docs, style};
 pub use document::{doc, document, DOC_TEMPLATE};
+pub use git::Repository;
 pub use health::health;
 use history::{as_of_arg, as_of_input, load_as_of, when, AsOf};
 pub use history::{repo_history, HISTORY_IRI};
@@ -322,6 +327,9 @@ pub fn space() -> ikigai_core::EndpointSpace {
         .bind(template(stat::COUNT_TEMPLATE), stat::count(seen.clone()))
         .bind(template(stat::REPORT_TEMPLATE), stat::report(seen.clone()))
         .bind(Exact::new(FLUSH_IRI), stat::flush(seen))
+        .bind(template(git::SOURCE_TEMPLATE), git::source())
+        .bind(template(git::REFRESH_TEMPLATE), git::refresh())
+        .bind(template(git::STATUS_TEMPLATE), git::status())
         .named(ikigai_core::space_iri("name"))
 }
 
