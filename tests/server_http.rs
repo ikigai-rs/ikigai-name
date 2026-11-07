@@ -251,7 +251,7 @@ fn the_http_face_negotiates_over_the_declared_faces() {
 }
 
 /// `/{iri}` resolves a URN or a tag IRI on the tenant, in either form, and
-/// `/-/resolution/{iri}` answers the resolution as data. A private name is answered
+/// `/-/resolution/iri/{iri}` answers the resolution as data. A private name is answered
 /// exactly as an unknown one.
 #[test]
 fn the_http_face_resolves_urns_and_tag_iris() {
@@ -267,7 +267,7 @@ fn the_http_face_resolves_urns_and_tag_iris() {
         assert!(doc.body.contains("rm:Weapon"), "{target}: {}", doc.body);
     }
 
-    let data = server.get("/-/resolution/tag:urnid.org,2026:acme:Weapon", None);
+    let data = server.get("/-/resolution/iri/tag:urnid.org,2026:acme:Weapon", None);
     assert_eq!(data.status, 200, "{}", data.body);
     assert_eq!(data.media(), "application/json");
     for want in [
@@ -278,12 +278,18 @@ fn the_http_face_resolves_urns_and_tag_iris() {
     ] {
         assert!(data.body.contains(want), "{want}: {}", data.body);
     }
-    let line = server.get("/-/resolution/urn:urnid:acme:Weapon?as=text/plain", None);
+    let line = server.get(
+        "/-/resolution/iri/urn:urnid:acme:Weapon?as=text/plain",
+        None,
+    );
     assert_eq!(line.status, 200, "{}", line.body);
     assert_eq!(
         line.body,
         "urn:urnid:acme:\thosted\turn:file:vocab/core.ttl\n"
     );
+    // The route partitions by a named key: the unnamed form is no route of its own.
+    let unnamed = server.get("/-/resolution/urn:urnid:acme:Weapon", None);
+    assert_eq!(unnamed.status, 404, "{}", unnamed.body);
 
     let hidden = server.get("/urn:urnid:hidden:x", None);
     let unknown = server.get("/urn:urnid:nobody:x", None);

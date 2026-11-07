@@ -13,7 +13,7 @@
 //! registry's `unclaimed` is a `delegate`, is forwarded to the upstream resolver through
 //! [`DELEGATE_IRI`]. That endpoint declares `urn:cap:net:*` and refuses, before anything
 //! leaves, a capability not holding `urn:cap:net:<upstream's host>` exactly. It reads the
-//! upstream's own resolution at `{upstream}-/resolution/{name}`, or its document at
+//! upstream's own resolution at `{upstream}/-/resolution/iri/{name}`, or its document at
 //! `{upstream}{name}`, through `urn:http:get`; a host with no HTTP client delegates
 //! nothing and says so.
 //!
@@ -292,7 +292,7 @@ pub(crate) fn resolution(
 /// Which of an upstream's faces a delegation reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Face {
-    /// `{upstream}-/resolution/{name}`: the record this module answers.
+    /// `{upstream}/-/resolution/iri/{name}`: the record this module answers.
     Resolution,
     /// `{upstream}{name}`: the document.
     Document,
@@ -345,7 +345,7 @@ pub(crate) fn upstream_url(upstream: &str, name: &str, face: Face, wanted: Optio
     let base = upstream.trim_end_matches('/');
     let name = encode(name.trim(), b":@,;");
     let mut url = match face {
-        Face::Resolution => format!("{base}/-/resolution/{name}"),
+        Face::Resolution => format!("{base}/-/resolution/iri/{name}"),
         Face::Document => format!("{base}/{name}"),
     };
     if let Some(wanted) = wanted {

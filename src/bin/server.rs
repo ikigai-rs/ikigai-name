@@ -604,11 +604,11 @@ fn routes(with_git: bool) -> RouteTable {
     // A name's resolution, as data, for a resolver delegating to this one. Raw, like
     // the document routes below: the variable IS a name, `:` and all.
     table.push(route(
-        "/-/resolution/{+iri}/{+rest}",
+        "/-/resolution/iri/{+iri}/{+rest}",
         "urn:name:resolution:iri:{+iri}/{+rest}",
     ));
     table.push(route(
-        "/-/resolution/{+iri}",
+        "/-/resolution/iri/{+iri}",
         "urn:name:resolution:iri:{+iri}",
     ));
     // Raw, so `/urn:urnid:acme:thing` reaches the document face as the IRI it is:

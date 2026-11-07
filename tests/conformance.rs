@@ -650,7 +650,7 @@ fn suite() -> Suite {
         )
         .fixture(
             Fixture::new(HTTP_GET, Verb::Source)
-                .arg("url", "https://urnid.org/-/resolution/urn:urnid:acme:x")
+                .arg("url", "https://urnid.org/-/resolution/iri/urn:urnid:acme:x")
                 .arg("headers", "User-Agent: ikigai-name"),
         )
         .pure(HTTP_GET)

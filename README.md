@@ -479,7 +479,7 @@ takes nothing but a `delegate`, and a later strategy is an addition to the list.
 
 Forwarding goes through `urn:name:delegate`, which declares `urn:cap:net:*` and refuses a
 capability not holding `urn:cap:net:<upstream's host>` exactly, before anything leaves. It reads
-the upstream's resolution at `{upstream}/-/resolution/{name}` and its document at
+the upstream's resolution at `{upstream}/-/resolution/iri/{name}` and its document at
 `{upstream}/{name}` through `urn:http:get`, and passes the answer back as it came, a refusal
 included. A host that binds no HTTP client delegates nothing and says so; the standalone server
 is such a host.
@@ -488,7 +488,7 @@ is such a host.
 
 `/{iri}` resolves on the tenant the `Host` names: `/urn:urnid:acme:Weapon` and
 `/tag:urnid.org,2026:acme:Weapon` serve a hosted or mirrored namespace's document, negotiated
-like any path. `/-/resolution/{iri}` answers the resolution as data, which is what a delegating
+like any path. `/-/resolution/iri/{iri}` answers the resolution as data, which is what a delegating
 resolver reads. A `redirect` still answers `500` rather than `303` (see
 [Known limitations](#known-limitations)).
 
@@ -866,7 +866,7 @@ resource:
 /-/style       → urn:name:style      the page's stylesheet
 /-/htmx        → urn:iki:ui:htmx     htmx, vendored by ikigai-ui
 /-/git/{ns}    → urn:name:git-refresh:{ns}   with --git: a signed POST and nothing else
-/-/resolution/{iri} → urn:name:resolution:iri:{iri}
+/-/resolution/iri/{iri} → urn:name:resolution:iri:{iri}
 /{ns}          → urn:name:doc:{ns}            a path, or a urn: or tag: IRI
 /{ns}/{doc}    → urn:name:doc:{ns}/{doc}
 ```

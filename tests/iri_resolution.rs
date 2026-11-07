@@ -385,8 +385,8 @@ fn a_private_name_is_delegated_like_an_unknown_one() {
     assert_eq!(
         *asked.lock().unwrap(),
         [
-            "https://urnid.org/-/resolution/urn:urnid:secret:x?as=text%2Fplain%3Bcharset%3Dutf-8",
-            "https://urnid.org/-/resolution/urn:urnid:other:x?as=text%2Fplain%3Bcharset%3Dutf-8",
+            "https://urnid.org/-/resolution/iri/urn:urnid:secret:x?as=text%2Fplain%3Bcharset%3Dutf-8",
+            "https://urnid.org/-/resolution/iri/urn:urnid:other:x?as=text%2Fplain%3Bcharset%3Dutf-8",
         ]
     );
 }
@@ -407,7 +407,7 @@ fn a_delegate_claim_forwards_to_its_upstream() {
     .expect("forwarded");
     assert_eq!(
         answer,
-        "upstream answered https://urnid.org/-/resolution/urn:urnid:elsewhere:a%2Fb\
+        "upstream answered https://urnid.org/-/resolution/iri/urn:urnid:elsewhere:a%2Fb\
          ?as=application%2Fjson\n"
     );
     let document = source(
