@@ -104,6 +104,10 @@ const FLUSH: &str = "seen-flush";
 const GIT_SOURCE: &str = "git-source";
 const GIT_REFRESH: &str = "git-refresh";
 const GIT_STATUS: &str = "git-status";
+const RESOLUTION: &str = "resolution";
+const RESOLUTION_IRI: &str = "resolution-iri";
+const DELEGATE: &str = "delegate";
+const HTTP_GET: &str = "http-get";
 
 const REGISTRY_FACE: &str = "urn:name:registry";
 const RESOLVE_IRI: &str = "urn:name:resolve";
@@ -114,9 +118,19 @@ const STYLE_IRI: &str = ikigai_name::docs::STYLE_IRI;
 const DOCUMENT_IRI: &str = "urn:name:document";
 const HEALTH_IRI: &str = "urn:name:health";
 
-/// The seven read faces, every one `.cacheable()` and none with a thread of its
+/// The nine read faces, every one `.cacheable()` and none with a thread of its
 /// own: exactly as cacheable as the registry (and the vocabulary) they read.
-const READ_FACES: [&str; 7] = [REGISTRY, RESOLVE, DOCS, DOCUMENT, DOC, HEALTH, GIT_SOURCE];
+const READ_FACES: [&str; 9] = [
+    REGISTRY,
+    RESOLVE,
+    RESOLUTION,
+    RESOLUTION_IRI,
+    DOCS,
+    DOCUMENT,
+    DOC,
+    HEALTH,
+    GIT_SOURCE,
+];
 
 /// Where the fixtures bind, doubling as the golden threads they name.
 const VOCAB_IRI: &str = "urn:conformance:vocab";
@@ -506,6 +520,10 @@ fn world_with(threaded: bool, engine: bool) -> World {
             fixed("git-read", "text/turtle", VOCAB, &["url", "branch", "path"]),
         )
         .bind(
+            Exact::new("urn:http:get"),
+            fixed(HTTP_GET, "application/json", "{}", &["url", "headers"]),
+        )
+        .bind(
             Exact::new("urn:file:shapes.ttl"),
             fixed("shapes", "text/turtle", VOCAB, &[]),
         )
@@ -576,6 +594,12 @@ fn read_request(id: &str) -> Request {
     match id {
         REGISTRY => request(Verb::Source, REGISTRY_FACE, &[]),
         RESOLVE => request(Verb::Source, RESOLVE_IRI, &[("path", "resmud/core")]),
+        RESOLUTION => request(
+            Verb::Source,
+            "urn:name:resolution",
+            &[("iri", "resmud/core")],
+        ),
+        RESOLUTION_IRI => request(Verb::Source, "urn:name:resolution:iri:resmud/core", &[]),
         DOCS => request(Verb::Source, DOCS_IRI, &[("prefix", "resmud")]),
         DOCUMENT => request(Verb::Source, DOCUMENT_IRI, &[("path", "resmud/core")]),
         DOC => request(Verb::Source, DOC_IRI, &[]),
@@ -612,7 +636,25 @@ fn suite() -> Suite {
         // `space()` is configuration-free, so it names itself (SPACE-NAME): two
         // calls claim `urn:iki:space:name` over the same fifteen doors.
         .self_named_space("name", ikigai_name::space)
+        // The terms a resolution's Turtle face writes, as the module ships them.
+        .vocabulary(ikigai_name::resolution::VOCABULARY_TTL)
         .fixture(Fixture::new(RESOLVE, Verb::Source).arg("path", "resmud/core"))
+        .fixture(Fixture::new(RESOLUTION, Verb::Source).arg("iri", "resmud/core"))
+        .fixture(Fixture::new(RESOLUTION_IRI, Verb::Source).binding("iri", "resmud/core"))
+        // Forwarding, over a stand-in client that answers every URL alike.
+        .fixture(
+            Fixture::new(DELEGATE, Verb::Source)
+                .arg("upstream", "https://urnid.org/")
+                .arg("name", "urn:urnid:acme:x")
+                .capability(Capability::scoped(["urn:cap:net:urnid.org"])),
+        )
+        .fixture(
+            Fixture::new(HTTP_GET, Verb::Source)
+                .arg("url", "https://urnid.org/-/resolution/iri/urn:urnid:acme:x")
+                .arg("headers", "User-Agent: ikigai-name"),
+        )
+        .pure(HTTP_GET)
+        .pure(DELEGATE)
         .fixture(
             // No `.binding("path", …)`: DOCUMENT is bound at an EXACT IRI, so a
             // binding has no template variable to fill and is silently ignored —
@@ -730,14 +772,16 @@ fn declared(suite: Suite) -> Suite {
 /// held to a weaker standard.
 fn assert_shape(report: &Report) {
     assert_eq!(
-        report.endpoints, 23,
-        "fifteen module endpoints, eight fixtures: {report}"
+        report.endpoints, 27,
+        "eighteen module endpoints, nine fixtures: {report}"
     );
     // registry, resolve, docs, style, document, doc, health, count, report, git-source,
     // git-status: one Source each; claim, flush and git-refresh: one Sink each; admin: Sink +
     // Delete; the three stores: Source + Sink each; vocab, sparql, and the reader, shapes
     // and validator a repository reads through: one each.
-    assert_eq!(report.actions, 27, "{report}");
+    // resolution, resolution-iri and delegate, and the client delegation reads through:
+    // one Source each.
+    assert_eq!(report.actions, 31, "{report}");
     assert_eq!(
         report.checks.skipped().count(),
         0,
@@ -750,7 +794,9 @@ fn assert_shape(report: &Report) {
     assert_eq!(
         pure,
         [
+            DELEGATE,
             "git-read",
+            HTTP_GET,
             "shacl-validate",
             "shapes",
             "sparql-select",
@@ -1124,6 +1170,7 @@ fn a_claim_overlapping_a_prefix_is_refused_typed() {
             reason: "ended".into(),
         },
         repository: None,
+        public: true,
     });
     *w.registry.write().unwrap() = serde_json::to_string(&deeper).unwrap();
     w.kernel.cut(REGISTRY_IRI);
@@ -1806,7 +1853,18 @@ fn conforms_on_a_clock() {
         .run_blocking(&kernel);
     eprintln!("[threaded registry, on a clock]\n{report}");
     assert!(report.is_clean(), "{report}");
-    assert_only_unprobed(&report, &[DOC, DOCUMENT, GIT_STATUS, REPORT, RESOLVE]);
+    assert_only_unprobed(
+        &report,
+        &[
+            DOC,
+            DOCUMENT,
+            GIT_STATUS,
+            REPORT,
+            RESOLUTION,
+            RESOLUTION_IRI,
+            RESOLVE,
+        ],
+    );
 
     let count = issue(
         &kernel,
@@ -1872,8 +1930,8 @@ fn conforms_over_the_real_engine() {
     assert!(report.is_clean(), "{report}");
     assert_nothing_unprobed(&report);
     assert_eq!(
-        report.endpoints, 26,
-        "fifteen, seven fixtures, four forms: {report}"
+        report.endpoints, 30,
+        "eighteen, eight fixtures, four forms: {report}"
     );
 
     // The page is real: every term the vocabulary defines, none it does not.

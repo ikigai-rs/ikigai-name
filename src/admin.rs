@@ -297,6 +297,10 @@ fn claim_error(prefix: &str, error: ClaimError) -> Error {
             name: "repository".into(),
             detail: format!("the namespace {prefix:?}: {bad}"),
         },
+        bad @ ClaimError::BadUpstream(_) => Error::InvalidArgument {
+            name: "upstream".into(),
+            detail: format!("the namespace {prefix:?}: {bad}"),
+        },
         bad @ (ClaimError::BadRule { .. } | ClaimError::NotARuleList(_)) => {
             Error::InvalidArgument {
                 name: "rules".into(),
@@ -333,6 +337,7 @@ pub fn claim() -> AsyncFnEndpoint {
                     owner: owner.clone(),
                     strategy,
                     repository,
+                    public: true,
                 })
                 .map_err(|e| claim_error(&prefix, e))?;
             store(inv, &registry, token).await?;

@@ -39,7 +39,18 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   the match of the rule that answered, if one did (`redirect`, `https://…`, `302`, `old/{x}`);
   `claim` and `admin` answer one line
   (`claimed <prefix>`, `updated <prefix>`, `retired <prefix>`, with the owner or the reason after
-  a tab); `registry` and `health` answer JSON.
+  a tab); `registry` and `health` answer JSON. `urn:name:resolution` (`src/resolution.rs`)
+  answers the same resolution as labeled JSON (`claim`, `strategy`, `target`, `tenant`,
+  `as-of`), as Turtle, or as that same tab-separated line. A name forwarded to an upstream
+  resolver is answered in the upstream's own words. Its refusals start `name:` and name the
+  name, the upstream and what is missing (`name: forwarding "x" to https://… needs
+  urn:cap:net:<host>`, `name: this host has no HTTP client, so it forwards nothing to https://…;
+  bind urn:http:get to add it`, `name: a resolution is answered as application/json,
+  text/turtle or text/plain, not <type>`). A name in a namespace that is not public is refused in
+  exactly the words an unknown name is (`name: no namespace claims "x"`). A registry refused
+  for a delegate names the namespace and the upstream as written (`the namespace "x" cannot be
+  claimed: its upstream "y" is not an https: or http: address with a host`, `its unclaimed can
+  only be a delegate, and this is hosted`).
 - **The active-name counts** (`src/stat.rs`): a count answers a number and a newline (`3`); a
   namespace's report answers one line per month, the month, a tab and the count (`2026-11`, then
   `3`), or the sentence `name: "x" has no names counted yet`; a flush answers one labeled line

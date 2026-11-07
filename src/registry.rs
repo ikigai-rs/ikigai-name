@@ -26,6 +26,7 @@
 
 use crate::git::repository_refusal;
 pub use crate::git::Repository;
+use crate::iri::name_segments;
 use crate::rules::{status_from_json, status_refusal};
 pub use crate::rules::{RedirectStatus, Rule};
 use serde::{Deserialize, Serialize};
@@ -71,12 +72,46 @@ pub enum Strategy {
         /// Why it was withdrawn, for whoever dereferences an IRI under it.
         reason: String,
     },
+    /// Answered by another resolver: a name under it is forwarded to `upstream`, which
+    /// is where a local resolver sends what it does not hold itself. Forwarding needs
+    /// `urn:cap:net:<upstream's host>` ([`Strategy::net_scope`]), which is checked
+    /// before anything leaves.
+    Delegate {
+        /// The upstream resolver's `https:` (or `http:`) address, such as
+        /// `https://urnid.org/`.
+        upstream: String,
+    },
+}
+
+impl Strategy {
+    /// The strategy's name, as the registry and every answer write it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Strategy::Hosted { .. } => "hosted",
+            Strategy::Redirect { .. } => "redirect",
+            Strategy::Mirror { .. } => "mirror",
+            Strategy::Retired { .. } => "retired",
+            Strategy::Delegate { .. } => "delegate",
+        }
+    }
+
+    /// The network scope this strategy needs to answer, if it needs one: for a
+    /// `delegate`, `urn:cap:net:<host>` of its upstream.
+    pub fn net_scope(&self) -> Option<String> {
+        match self {
+            Strategy::Delegate { upstream } => {
+                crate::tenant::iri_host(upstream).map(|host| format!("urn:cap:net:{host}"))
+            }
+            _ => None,
+        }
+    }
 }
 
 /// One claimed namespace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Namespace {
-    /// The claimed path prefix, e.g. `resmud`.
+    /// The claimed prefix: a path such as `resmud`, or an IRI prefix such as
+    /// `urn:urnid:acme:` or `tag:urnid.org,2026:acme:` (see [`crate::iri`]).
     pub prefix: String,
     /// The capability that administers it. Holding it is what permits editing
     /// this entry; it is not a display name.
@@ -88,6 +123,19 @@ pub struct Namespace {
     /// See [`git`](crate::git).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repository: Option<Repository>,
+    /// Whether anyone may resolve a name under it. A namespace that is not public
+    /// answers only a capability holding its `owner`; to anyone else it answers exactly
+    /// as a name nobody claims does, so it cannot be found by asking.
+    #[serde(default = "public_by_default", skip_serializing_if = "is_public")]
+    pub public: bool,
+}
+
+fn public_by_default() -> bool {
+    true
+}
+
+fn is_public(public: &bool) -> bool {
+    *public
 }
 
 /// Where a `redirect` namespace sends one path.
@@ -112,8 +160,11 @@ impl Namespace {
         else {
             return None;
         };
-        let wanted = segments(path);
-        let below = wanted.get(segments(&self.prefix).len()..).unwrap_or(&[]);
+        let (_, wanted) = name_segments(path);
+        let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+        let below = wanted
+            .get(name_segments(&self.prefix).1.len()..)
+            .unwrap_or(&[]);
         let answered = rules.iter().find_map(|rule| {
             rule.rewrite(below).map(|target| Redirection {
                 target,
@@ -169,6 +220,11 @@ pub struct Registry {
     /// This deployment's ceilings.
     #[serde(default)]
     pub limits: Limits,
+    /// How a name no namespace claims is answered, if not by "nobody claims it": a
+    /// `delegate` strategy, forwarding it to an upstream resolver. Nothing else may be
+    /// written here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unclaimed: Option<Strategy>,
 }
 
 /// Why a claim was refused.
@@ -195,6 +251,9 @@ pub enum ClaimError {
     },
     /// A repository binding the registry cannot hold. Carries the clause saying why.
     BadRepository(String),
+    /// A `delegate` upstream that is not an `http:` or `https:` address with a host.
+    /// Carries the upstream as written.
+    BadUpstream(String),
 }
 
 impl std::fmt::Display for ClaimError {
@@ -214,6 +273,10 @@ impl std::fmt::Display for ClaimError {
                 reason,
             } => write!(f, "in rule {rule} ({pattern:?}), {reason}"),
             ClaimError::BadRepository(reason) => write!(f, "its repository {reason}"),
+            ClaimError::BadUpstream(upstream) => write!(
+                f,
+                "its upstream {upstream:?} is not an https: or http: address with a host"
+            ),
         }
     }
 }
@@ -228,11 +291,14 @@ pub(crate) fn segments(prefix: &str) -> Vec<&str> {
 ///
 /// Comparison is **segment-wise, never textual**: `acme` contains `acme/vocab`
 /// but is unrelated to `acmecorp`, which a plain `starts_with` would wrongly
-/// call a conflict and refuse.
+/// call a conflict and refuse. An IRI prefix's segments are colon-separated, in its
+/// canonical form ([`crate::iri`]), so `urn:urnid:acme:` contains
+/// `tag:urnid.org,2026:acme:x:` and is unrelated to `urn:urnid:acmecorp:`. A path
+/// prefix never overlaps an IRI prefix.
 pub fn overlaps(a: &str, b: &str) -> bool {
-    let (a, b) = (segments(a), segments(b));
+    let ((a_iri, a), (b_iri, b)) = (name_segments(a), name_segments(b));
     let shared = a.len().min(b.len());
-    a[..shared] == b[..shared]
+    a_iri == b_iri && a[..shared] == b[..shared]
 }
 
 /// Why a registry file was refused as a whole.
@@ -245,6 +311,9 @@ pub fn overlaps(a: &str, b: &str) -> bool {
 pub enum LoadError {
     /// The bytes were not the documented JSON shape.
     Json(serde_json::Error),
+    /// `unclaimed` named something other than a `delegate` to an upstream with a host.
+    /// Carries the clause saying why.
+    Unclaimed(String),
     /// An entry the claim rule refuses. `prefix` is the entry that could not be
     /// claimed; for an overlap, `error` names the earlier entry it collides
     /// with, so the refusal names both offending prefixes.
@@ -260,6 +329,7 @@ impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LoadError::Json(e) => write!(f, "not valid registry JSON: {e}"),
+            LoadError::Unclaimed(why) => write!(f, "its unclaimed {why}"),
             LoadError::Refused { prefix, error } => {
                 write!(f, "the namespace {prefix:?} cannot be claimed: {error}")
             }
@@ -271,7 +341,7 @@ impl std::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LoadError::Json(e) => Some(e),
-            LoadError::Refused { .. } => None,
+            LoadError::Refused { .. } | LoadError::Unclaimed(_) => None,
         }
     }
 }
@@ -314,6 +384,12 @@ impl Strategy {
     /// Whether a registry may hold this strategy: every rule of a `redirect` parses,
     /// and no capture it uses is undefined.
     pub fn check(&self) -> Result<(), ClaimError> {
+        if let Strategy::Delegate { upstream } = self {
+            return match self.net_scope() {
+                Some(_) => Ok(()),
+                None => Err(ClaimError::BadUpstream(upstream.clone())),
+            };
+        }
         let Strategy::Redirect { rules, .. } = self else {
             return Ok(());
         };
@@ -394,9 +470,26 @@ impl Registry {
                 .and_then(|raw| refuse_by_name(&raw))
                 .unwrap_or(LoadError::Json(e))
         })?;
+        match &parsed.unclaimed {
+            None => {}
+            Some(delegate @ Strategy::Delegate { upstream }) => {
+                if delegate.check().is_err() {
+                    return Err(LoadError::Unclaimed(format!(
+                        "upstream {upstream:?} is not an https: or http: address with a host"
+                    )));
+                }
+            }
+            Some(other) => {
+                return Err(LoadError::Unclaimed(format!(
+                    "can only be a delegate, and this is {}",
+                    other.name()
+                )))
+            }
+        }
         let mut registry = Registry {
             namespaces: Vec::with_capacity(parsed.namespaces.len()),
             limits: parsed.limits,
+            unclaimed: parsed.unclaimed,
         };
         for namespace in parsed.namespaces {
             let prefix = namespace.prefix.clone();
@@ -407,15 +500,18 @@ impl Registry {
         Ok(registry)
     }
 
-    /// The namespace claiming `path`, if any.
+    /// The namespace claiming `name` — a path, or a `urn:` or `tag:` IRI — if any.
     ///
     /// Because claims cannot overlap, at most one can match and no precedence
-    /// rule is needed to choose between candidates.
-    pub fn lookup(&self, path: &str) -> Option<&Namespace> {
-        let wanted = segments(path);
+    /// rule is needed to choose between candidates. A path is held only by a path
+    /// claim, and an IRI only by an IRI claim, compared in its canonical form.
+    pub fn lookup(&self, name: &str) -> Option<&Namespace> {
+        let (iri, wanted) = name_segments(name);
         self.namespaces.iter().find(|ns| {
-            let claimed = segments(&ns.prefix);
-            claimed.len() <= wanted.len() && wanted[..claimed.len()] == claimed[..]
+            let (claimed_iri, claimed) = name_segments(&ns.prefix);
+            claimed_iri == iri
+                && claimed.len() <= wanted.len()
+                && wanted[..claimed.len()] == claimed[..]
         })
     }
 
@@ -461,6 +557,7 @@ mod tests {
                 source: format!("urn:file:{prefix}"),
             },
             repository: None,
+            public: true,
         }
     }
 
@@ -574,6 +671,7 @@ mod tests {
                     reason: "project ended".into(),
                 },
                 repository: None,
+                public: true,
             }],
             ..Registry::default()
         };
@@ -605,6 +703,7 @@ mod tests {
                         }],
                     },
                     repository: None,
+                    public: true,
                 },
             ],
             ..Registry::default()
@@ -745,7 +844,7 @@ mod tests {
                     assert_eq!(prefix, second, "the refused entry is the second");
                     error
                 }
-                LoadError::Json(e) => panic!("the file is well-formed JSON: {e}"),
+                other => panic!("the file is well-formed JSON: {other}"),
             });
             assert_eq!(
                 by_load, by_claim,
@@ -922,6 +1021,7 @@ mod tests {
                     }],
                 },
                 repository: None,
+                public: true,
             })
             .expect_err("a capture in the host");
         assert!(
@@ -952,6 +1052,7 @@ mod tests {
                 ],
             },
             repository: None,
+            public: true,
         }
     }
 
@@ -1022,6 +1123,7 @@ mod tests {
             limits: Limits {
                 max_document_bytes: 4096,
             },
+            unclaimed: None,
         };
         let json = serde_json::to_vec(&reg).expect("serializes");
         assert_eq!(Registry::from_json(&json).expect("loads"), reg);

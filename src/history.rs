@@ -356,7 +356,7 @@ fn media_type(path: &str, file: &Representation) -> ReprType {
 // --- dates ------------------------------------------------------------------
 
 /// `YYYY-MM-DD` (the last second of that day in UTC) or an RFC 3339 instant.
-fn parse_as_of(text: &str) -> Option<AsOf> {
+pub(crate) fn parse_as_of(text: &str) -> Option<AsOf> {
     let seconds = if text.len() == 10 {
         epoch_days(text)? * 86_400 + 86_399
     } else {

@@ -578,7 +578,7 @@ pub fn docs() -> AsyncFnEndpoint {
                 .unwrap_or_else(|_| "auto".to_string());
 
             let registry = load(inv).await?;
-            let found = resolve_path(&registry, &prefix, None)?;
+            let found = resolve_path(&registry, &prefix, inv.capability, None)?;
             // Only a hosted namespace has documents here to read. A redirect is
             // someone else's to document, and saying so is more useful than an
             // empty page that looks like a vocabulary with no terms.
@@ -594,6 +594,11 @@ pub fn docs() -> AsyncFnEndpoint {
                 Strategy::Retired { reason } => {
                     return Err(Error::NotFound(format!(
                         "name: {prefix:?} is retired: {reason}"
+                    )))
+                }
+                Strategy::Delegate { upstream } => {
+                    return Err(Error::Endpoint(format!(
+                        "name: {prefix:?} is answered by {upstream} — documentation lives there"
                     )))
                 }
             };

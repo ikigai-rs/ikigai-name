@@ -34,7 +34,9 @@ const VOCAB: &str = "@prefix rm: <https://iriref.org/resmud/core#> .\n\
                      rm:Weapon a rdfs:Class ; rdfs:label \"Weapon\" .\n";
 
 const REGISTRY: &str = r#"{"namespaces":[
-  {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:file:vocab/core.ttl"}
+  {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
+  {"prefix":"urn:urnid:acme:","owner":"urn:cap:name:admin:acme","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
+  {"prefix":"urn:urnid:hidden:","owner":"urn:cap:name:admin:hidden","strategy":"hosted","source":"urn:file:vocab/core.ttl","public":false}
 ]}"#;
 
 /// A scratch root no other server in this process shares.
@@ -246,6 +248,56 @@ fn the_http_face_negotiates_over_the_declared_faces() {
 
     // An unclaimed namespace is not found, not an error.
     assert_eq!(server.get("/nobody", None).status, 404);
+}
+
+/// `/{iri}` resolves a URN or a tag IRI on the tenant, in either form, and
+/// `/-/resolution/iri/{iri}` answers the resolution as data. A private name is answered
+/// exactly as an unknown one.
+#[test]
+fn the_http_face_resolves_urns_and_tag_iris() {
+    let server = Server::start();
+    for target in [
+        "/urn:urnid:acme:Weapon",
+        "/tag:urnid.org,2026:ACME:Weapon",
+        "/urn:urnid:acme:a/b",
+    ] {
+        let doc = server.get(target, None);
+        assert_eq!(doc.status, 200, "{target}: {}", doc.body);
+        assert_eq!(doc.media(), "text/turtle", "{target}");
+        assert!(doc.body.contains("rm:Weapon"), "{target}: {}", doc.body);
+    }
+
+    let data = server.get("/-/resolution/iri/tag:urnid.org,2026:acme:Weapon", None);
+    assert_eq!(data.status, 200, "{}", data.body);
+    assert_eq!(data.media(), "application/json");
+    for want in [
+        r#""claim": "urn:urnid:acme:""#,
+        r#""canonical": "urn:urnid:acme:Weapon""#,
+        r#""strategy": "hosted""#,
+        r#""target": "urn:file:vocab/core.ttl""#,
+    ] {
+        assert!(data.body.contains(want), "{want}: {}", data.body);
+    }
+    let line = server.get(
+        "/-/resolution/iri/urn:urnid:acme:Weapon?as=text/plain",
+        None,
+    );
+    assert_eq!(line.status, 200, "{}", line.body);
+    assert_eq!(
+        line.body,
+        "urn:urnid:acme:\thosted\turn:file:vocab/core.ttl\n"
+    );
+    // The route partitions by a named key: the unnamed form is no route of its own.
+    let unnamed = server.get("/-/resolution/urn:urnid:acme:Weapon", None);
+    assert_eq!(unnamed.status, 404, "{}", unnamed.body);
+
+    let hidden = server.get("/urn:urnid:hidden:x", None);
+    let unknown = server.get("/urn:urnid:nobody:x", None);
+    assert_eq!(hidden.status, 404, "{}", hidden.body);
+    assert_eq!(
+        (hidden.status, hidden.body.replace("hidden", "NAME")),
+        (unknown.status, unknown.body.replace("nobody", "NAME"))
+    );
 }
 
 /// Every value the page gives `attr` (`href`, `src`, `hx-get`), unescaped, in
