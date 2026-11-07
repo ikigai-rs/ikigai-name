@@ -411,6 +411,87 @@ ikigai -c 'source urn:name:resolve path=reports/2019/42 as-of=2026-03-31'
 # reports	redirect	https://old.example/reports/2019/42	302	{year}/{id}
 ```
 
+## URN and tag names
+
+A claim can hold an IRI prefix as well as a path: a `urn:` or a `tag:`, whose segments are
+separated by `:` rather than `/`. The claim rule is the one paths follow: no two claims
+overlap, refused when a claim is made and when the registry is loaded, compared segment by
+segment, so `urn:urnid:acme:` holds `urn:urnid:acme:item:42` and has nothing to do with
+`urn:urnid:acmecorp:`. A path claim never overlaps an IRI claim.
+
+```json
+{
+  "unclaimed": {"strategy": "delegate", "upstream": "https://urnid.org/"},
+  "namespaces": [
+    {"prefix": "urn:urnid:acme:", "owner": "urn:cap:name:admin:acme",
+     "strategy": "redirect", "target": "https://acme.example/ns", "status": 303,
+     "rules": [{"match": "item/{id}", "target": "https://acme.example/items/{id}"}]},
+    {"prefix": "tag:urnid.org,2026:gonk:", "owner": "urn:cap:name:admin:gonk",
+     "strategy": "hosted", "source": "urn:file:gonk.ttl"},
+    {"prefix": "urn:urnid:drafts:", "owner": "urn:cap:name:admin:drafts",
+     "strategy": "hosted", "source": "urn:file:drafts.ttl", "public": false},
+    {"prefix": "urn:urnid:elsewhere:", "owner": "urn:cap:name:admin:elsewhere",
+     "strategy": "delegate", "upstream": "https://urnid.org/"}
+  ]
+}
+```
+
+### The urnid equivalence
+
+`urn:urnid:{owner}:{local}` and `tag:urnid.org,2026:{owner}:{local}` are one name, by one rule
+that works both ways: each is compared in its canonical form, the `urn:` one. The scheme, the
+URN namespace identifier and the tag's authority compare case-insensitively; the **owner label
+compares case-insensitively** (it is lowercased); the **local part is case-sensitive**, apart
+from percent-encoding normalization (`%7e`, `%7E` and `~` are one name, `%2f` is `%2F`). So
+`tag:urnid.org,2026:ACME:Item` is `urn:urnid:acme:Item`, and it is not `urn:urnid:acme:item`.
+A claim on either form holds both, and claiming the other form is an overlap.
+
+### Resolution as data
+
+```sh
+ikigai -c 'source urn:name:resolution:iri:tag:urnid.org,2026:acme:item:42'
+# {"name": "tag:urnid.org,2026:acme:item:42", "canonical": "urn:urnid:acme:item:42",
+#  "claim": "urn:urnid:acme:", "strategy": "redirect",
+#  "target": "https://acme.example/items/42", "status": 303, "rule": "item/{id}"}
+ikigai -c 'source urn:name:resolve path=urn:urnid:acme:item:42'
+# urn:urnid:acme:	redirect	https://acme.example/items/42	303	item/{id}
+```
+
+`urn:name:resolution:iri:{iri}` (or `urn:name:resolution` with `iri=`) finds the one claim
+containing a name, a path or an IRI, and answers its claim, strategy and target, the tenant it
+was asked of and, with `as-of`, the instant. `as=text/turtle` answers the same record as
+Turtle, and `as=text/plain` the line `urn:name:resolve` prints, which is computed from the same
+resolution: `urn:name:resolve path=…` keeps working, for paths and IRIs alike.
+
+### The same answer
+
+A namespace with `"public": false` answers only a capability holding its `owner`. To anyone
+else, a name under it is answered exactly as a name nobody claims: the same refusal, in the
+same words, or the same forwarding when unclaimed names are delegated. Asking cannot tell a
+private name from an unknown one.
+
+### Delegating to an upstream resolver
+
+A host such as gonk runs a local resolver that answers for its own names and passes the rest
+upward. Strategy `delegate` forwards a name to its `upstream` resolver, for one claim, or as the
+registry's `unclaimed` strategy, for every name no claim holds. Strategies stay data: `unclaimed`
+takes nothing but a `delegate`, and a later strategy is an addition to the list.
+
+Forwarding goes through `urn:name:delegate`, which declares `urn:cap:net:*` and refuses a
+capability not holding `urn:cap:net:<upstream's host>` exactly, before anything leaves. It reads
+the upstream's resolution at `{upstream}/-/resolution/{name}` and its document at
+`{upstream}/{name}` through `urn:http:get`, and passes the answer back as it came, a refusal
+included. A host that binds no HTTP client delegates nothing and says so; the standalone server
+is such a host.
+
+### Over HTTP
+
+`/{iri}` resolves on the tenant the `Host` names: `/urn:urnid:acme:Weapon` and
+`/tag:urnid.org,2026:acme:Weapon` serve a hosted or mirrored namespace's document, negotiated
+like any path. `/-/resolution/{iri}` answers the resolution as data, which is what a delegating
+resolver reads. A `redirect` still answers `500` rather than `303` (see
+[Known limitations](#known-limitations)).
+
 ## As of a date
 
 `urn:name:document`, `urn:name:resolve` and `urn:name:registry` take `as-of`:
@@ -699,7 +780,10 @@ new.
 | `urn:name:document` | Source | the namespace document, negotiated (`as=`) |
 | `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment, or with `view=page` the page showing that term |
 | `urn:name:style` | Source | the documentation page's stylesheet for `theme=` |
-| `urn:name:resolve` | Source | how a path resolves (for a redirect, its target, status and any rule that answered), or a `NotFound` naming it |
+| `urn:name:resolve` | Source | how a path or an IRI resolves (for a redirect, its target, status and any rule that answered), or a `NotFound` naming it |
+| `urn:name:resolution:iri:{iri}` | Source | the same resolution as data: JSON, Turtle, or that line |
+| `urn:name:resolution` | Source | the same, for `iri=` |
+| `urn:name:delegate` | Source | forward a name to an upstream resolver; needs `urn:cap:net:<host>` |
 | `urn:name:registry` | Source | every claimed namespace, as JSON |
 | `urn:name:health` | Source | what this deployment holds, and what it refuses |
 | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
@@ -782,7 +866,8 @@ resource:
 /-/style       → urn:name:style      the page's stylesheet
 /-/htmx        → urn:iki:ui:htmx     htmx, vendored by ikigai-ui
 /-/git/{ns}    → urn:name:git-refresh:{ns}   with --git: a signed POST and nothing else
-/{ns}          → urn:name:doc:{ns}
+/-/resolution/{iri} → urn:name:resolution:iri:{iri}
+/{ns}          → urn:name:doc:{ns}            a path, or a urn: or tag: IRI
 /{ns}/{doc}    → urn:name:doc:{ns}/{doc}
 ```
 
@@ -808,13 +893,26 @@ task and limited to `seen/`, which no request can reach. `--git` adds another, l
 
 - **A `redirect` namespace answers HTTP 500.** The module reports the target,
   but the HTTP face has no mapping for "this is somewhere else", so it surfaces
-  as a server error rather than a `303`. Until that lands in `ikigai-web`, only
+  as a server error rather than a `303`. That holds for a URN or a tag IRI at `/{iri}` too:
+  `ikigai-web` 0.2 lets an endpoint set `Location` only on a write's answer, and only to a
+  same-origin path, so a read cannot answer `303` to another host. Until that lands in `ikigai-web`, only
   `hosted` and `mirror` namespaces are servable over HTTP. That includes
   [a namespace's status and rules](#redirects-statuses-and-rewrite-rules):
   `urn:name:resolve` reports them, and no HTTP response carries them yet.
 - **A retired namespace answers `404`, not `410`.** The distinction — *gone* as
   against *never here* — is exactly what a tombstone exists to express, and it
   is lost at the HTTP boundary for the same reason.
+
+## Unreleased migration
+
+Rust callers: `Namespace` gains `public` (`true` for everything that exists today), `Strategy`
+gains `Delegate`, `Registry` gains `unclaimed`, `ClaimError` gains `BadUpstream`, `LoadError`
+gains `Unclaimed`, and `Health` gains `delegated`; an exhaustive `match` on any of them needs an
+arm. A prefix that begins `urn:` or `tag:` is now an IRI claim, compared by colon-separated
+segments in its canonical form, where it used to be a one-segment path; a registry holding such
+a prefix as a path should check what it meant. `space()` binds three more faces:
+`urn:name:resolution`, `urn:name:resolution:iri:{iri}` and `urn:name:delegate`. The server's
+document routes take a `:` in a segment, which they used to refuse with `400`.
 
 ## 0.6.0 migration
 

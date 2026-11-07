@@ -601,8 +601,21 @@ fn routes(with_git: bool) -> RouteTable {
         ));
         table.push(route("/-/git/{ns}", "urn:name:git-refresh:{ns}"));
     }
-    table.push(route("/{ns}/{doc}", "urn:name:doc:{ns}/{doc}"));
-    table.push(route("/{ns}", "urn:name:doc:{ns}"));
+    // A name's resolution, as data, for a resolver delegating to this one. Raw, like
+    // the document routes below: the variable IS a name, `:` and all.
+    table.push(route(
+        "/-/resolution/{+iri}/{+rest}",
+        "urn:name:resolution:iri:{+iri}/{+rest}",
+    ));
+    table.push(route(
+        "/-/resolution/{+iri}",
+        "urn:name:resolution:iri:{+iri}",
+    ));
+    // Raw, so `/urn:urnid:acme:thing` reaches the document face as the IRI it is:
+    // a strict variable refuses `:`. Every value is only a name the registry is asked
+    // about, and `%2F` decodes to the `/` the two-segment route would have joined.
+    table.push(route("/{+ns}/{+doc}", "urn:name:doc:{+ns}/{+doc}"));
+    table.push(route("/{+ns}", "urn:name:doc:{+ns}"));
     RouteTable::new(table)
 }
 

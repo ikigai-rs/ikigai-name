@@ -27,9 +27,10 @@
 
 use crate::git;
 use crate::history::{as_of_arg, as_of_input, load_as_of, no_page_as_of, read_as_of, when};
+use crate::load;
 use crate::registry::Strategy;
+use crate::resolution::{self, Answer, Face};
 use crate::stat::{self, Seen};
-use crate::{load, resolve_path};
 use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation, InvokeFuture,
     Iri, Request, Verb,
@@ -155,7 +156,15 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
             Some(at) => Some(load_as_of(inv, at).await?),
             None => None,
         };
-        let found = resolve_path(past.as_ref().unwrap_or(&registry), &path, at.as_ref())?;
+        // A name answered upstream is forwarded whole: the upstream negotiates it.
+        let searched = past.as_ref().unwrap_or(&registry);
+        let found = match resolution::answer(searched, &path, inv.capability, at.as_ref())? {
+            Answer::Claimed(found) => found,
+            Answer::Delegated(upstream) => {
+                return resolution::forward(inv, upstream, &path, Face::Document, Some(&wanted))
+                    .await;
+            }
+        };
         let prefix = found.prefix.clone();
         let strategy = found.strategy.clone();
         let repository = found.repository.clone();
@@ -185,6 +194,12 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
                 return Err(Error::NotFound(format!(
                     "name: {prefix:?} is retired{}: {reason}",
                     when(at.as_ref())
+                )))
+            }
+            // Answered above, by forwarding.
+            Strategy::Delegate { upstream } => {
+                return Err(Error::Endpoint(format!(
+                    "name: {prefix:?} is answered by {upstream}"
                 )))
             }
         };

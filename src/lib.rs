@@ -30,7 +30,10 @@
 //! | IRI | verb | what |
 //! |---|---|---|
 //! | `urn:name:registry` | Source | the parsed registry, as JSON |
-//! | `urn:name:resolve` | Source | how a path resolves, or an error naming why not |
+//! | `urn:name:resolve` | Source | how a path or an IRI resolves, as one line, or an error naming why not |
+//! | `urn:name:resolution:iri:{iri}` | Source | the same, as data: JSON, Turtle or that line |
+//! | `urn:name:resolution` | Source | the same, for `iri=` |
+//! | `urn:name:delegate` | Source | forward a name to an upstream resolver |
 //! | `urn:name:health` | Source | what this deployment holds, and what it refuses |
 //! | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
 //! | `urn:name:stat:namespace:{prefix}` | Source | that count for every month held |
@@ -51,7 +54,9 @@ pub mod document;
 pub mod git;
 pub mod health;
 pub mod history;
+pub mod iri;
 pub mod registry;
+pub mod resolution;
 pub mod rules;
 pub mod stat;
 pub mod tenant;
@@ -61,7 +66,7 @@ pub use docs::{docs, style};
 pub use document::{doc, document, DOC_TEMPLATE};
 pub use git::Repository;
 pub use health::health;
-use history::{as_of_arg, as_of_input, load_as_of, when, AsOf};
+use history::{as_of_arg, as_of_input, load_as_of, AsOf};
 pub use history::{repo_history, HISTORY_IRI};
 use ikigai_core::{
     ArgSpec, AsyncFnEndpoint, ContentId, Description, Error, Exact, Invocation, InvokeFuture, Iri,
@@ -69,6 +74,10 @@ use ikigai_core::{
 };
 pub use registry::{
     ClaimError, LoadError, Namespace, RedirectStatus, Redirection, Registry, Rule, Strategy,
+};
+pub use resolution::{
+    delegate, resolution_at_iri, resolution_endpoint, Resolution, DELEGATE_IRI, RESOLUTION_IRI,
+    RESOLUTION_TEMPLATE,
 };
 use stat::Seen;
 pub use stat::{CAP_FLUSH, FLUSH_IRI, SEEN_TEMPLATE};
@@ -96,10 +105,6 @@ const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 
 const APPLICATION_JSON: &str = "application/json";
 const TEXT_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
-
-fn text_plain_utf8() -> ReprType {
-    ReprType::new("text/plain").with_param("charset", "utf-8")
-}
 
 /// Read and parse the registry back through the kernel.
 ///
@@ -144,19 +149,24 @@ fn path_arg(inv: &Invocation<'_>) -> Result<String> {
 /// A path in no claimed namespace is permanently absent rather than temporarily
 /// unavailable — nothing about retrying changes it — so this is `NotFound` and
 /// not `Unavailable`.
+///
+/// A namespace that is not public is absent to a capability not holding its owner, in
+/// exactly the words an unclaimed path is (see [`resolution`]).
 pub(crate) fn resolve_path<'r>(
     registry: &'r Registry,
     path: &str,
+    capability: &ikigai_core::Capability,
     at: Option<&AsOf>,
 ) -> Result<&'r registry::Namespace> {
     registry
         .lookup(path)
-        .ok_or_else(|| Error::NotFound(format!("name: no namespace claims {path:?}{}", when(at))))
+        .filter(|ns| resolution::visible(ns, capability))
+        .ok_or_else(|| resolution::unclaimed(path, at))
 }
 
 /// The registry a read face answers from: as of the date it was asked about, or
 /// the current one.
-async fn load_at(inv: &Invocation<'_>, at: Option<&AsOf>) -> Result<Registry> {
+pub(crate) async fn load_at(inv: &Invocation<'_>, at: Option<&AsOf>) -> Result<Registry> {
     match at {
         Some(at) => load_as_of(inv, at).await,
         None => load(inv).await,
@@ -165,7 +175,7 @@ async fn load_at(inv: &Invocation<'_>, at: Option<&AsOf>) -> Result<Registry> {
 
 /// Cacheable only for the present: a past answer is read from history every time,
 /// because the cache is not an archive (see [`history`]).
-fn cacheable_unless_past(repr: Representation, at: Option<&AsOf>) -> Representation {
+pub(crate) fn cacheable_unless_past(repr: Representation, at: Option<&AsOf>) -> Representation {
     match at {
         Some(_) => repr,
         None => repr.cacheable(),
@@ -219,52 +229,8 @@ fn resolve_counted_by(seen: Option<Arc<Seen>>) -> AsyncFnEndpoint {
         let seen = seen.clone();
         Box::pin(async move {
             let path = path_arg(inv)?;
-            let at = as_of_arg(inv)?;
-            let registry = load_at(inv, at.as_ref()).await?;
-            let found = resolve_path(&registry, &path, at.as_ref())?;
-            let answer = match &found.strategy {
-                Strategy::Hosted { source } => format!("hosted\t{source}"),
-                Strategy::Redirect { .. } => {
-                    let found = found.redirection(&path).ok_or_else(|| {
-                        Error::Endpoint("name: a redirect namespace named no target".into())
-                    })?;
-                    let answer = format!("redirect\t{}\t{}", found.target, found.status);
-                    match found.rule {
-                        Some(rule) => format!("{answer}\t{rule}"),
-                        None => answer,
-                    }
-                }
-                Strategy::Mirror { origin } => format!("mirror\t{origin}"),
-                // Retired is an ANSWER, not a miss: the namespace was real, and
-                // saying so is more useful than pretending it never existed.
-                // HTTP would call this 410 Gone; core has no such variant, so
-                // the face maps it and NotFound carries the explanation.
-                Strategy::Retired { reason } => {
-                    return Err(Error::NotFound(format!(
-                        "name: {:?} is retired{}: {reason}",
-                        found.prefix,
-                        when(at.as_ref())
-                    )))
-                }
-            };
-            // Pure in (registry, path); the kernel clamps to the registry's
-            // own expiry, so a file-backed registry with a watcher caches and
-            // one without does not.
-            let answered = cacheable_unless_past(
-                Representation::new(
-                    text_plain_utf8(),
-                    format!("{}\t{answer}\n", found.prefix).into_bytes(),
-                ),
-                at.as_ref(),
-            );
-            Ok(stat::counted(
-                seen.as_deref(),
-                inv,
-                at.as_ref(),
-                &found.prefix,
-                &path,
-                answered,
-            ))
+            // The same resolution `urn:name:resolution` answers, as its one line.
+            resolution::resolve_in(inv, seen.as_deref(), &path, TEXT_PLAIN_UTF8).await
         })
     })
     .with_description(
@@ -304,12 +270,16 @@ pub const SPACE_ID: &str = "urn:iki:space:name";
 pub fn space() -> ikigai_core::EndpointSpace {
     let seen = Arc::new(Seen::default());
     let template = |pattern: &str| UriTemplate::parse(pattern).expect("a valid template");
+    let (by_argument, by_iri) = resolution::counted(seen.clone());
     ikigai_core::EndpointSpace::new()
         .bind(Exact::new("urn:name:registry"), registry_endpoint())
         .bind(
             Exact::new("urn:name:resolve"),
             resolve_counted_by(Some(seen.clone())),
         )
+        .bind(Exact::new(RESOLUTION_IRI), by_argument)
+        .bind(template(RESOLUTION_TEMPLATE), by_iri)
+        .bind(Exact::new(DELEGATE_IRI), delegate())
         .bind(Exact::new("urn:name:claim"), claim())
         .bind(Exact::new("urn:name:admin"), admin())
         .bind(Exact::new("urn:name:docs"), docs())

@@ -59,7 +59,6 @@
 use crate::admin::{admin_scope, refuse_reserved_prefix, CAP_ADMIN_ANY};
 use crate::history::{epoch_days, format_utc, AsOf};
 use crate::load;
-use crate::registry::segments;
 use crate::tenant::tenant_of;
 use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, ContentId, Description, Error, Expiry,
@@ -150,7 +149,7 @@ impl Seen {
         let end = period_end(&period)?;
         // `resmud/core`, `/resmud/core` and `resmud//core` are one name, to the
         // registry and so here.
-        let name = segments(path).join("/");
+        let name = crate::iri::name_key(path);
         let key = SetKey {
             tenant: tenant_of(inv.capability).map(str::to_string),
             prefix: prefix.to_string(),

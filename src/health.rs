@@ -49,6 +49,9 @@ pub struct Health<'a> {
     pub mirrored: usize,
     /// How many are tombstones. Never decreases.
     pub retired: usize,
+    /// How many are answered by an upstream resolver.
+    #[serde(default)]
+    pub delegated: usize,
     /// The document ceiling in force, in bytes.
     pub max_document_bytes: usize,
     /// Which faces mark their own results cacheable.
@@ -58,9 +61,10 @@ pub struct Health<'a> {
 
 /// Faces whose results are a pure function of their inputs, and which therefore
 /// mark themselves cacheable. Sinks are absent by definition: they mutate.
-const CACHEABLE_FACES: [&str; 4] = [
+const CACHEABLE_FACES: [&str; 5] = [
     "urn:name:registry",
     "urn:name:resolve",
+    "urn:name:resolution",
     "urn:name:docs",
     "urn:name:document",
 ];
@@ -76,6 +80,7 @@ pub fn health() -> AsyncFnEndpoint {
                 redirected: 0,
                 mirrored: 0,
                 retired: 0,
+                delegated: 0,
                 max_document_bytes: registry.limits.max_document_bytes,
                 cacheable: CACHEABLE_FACES.to_vec(),
             };
@@ -86,6 +91,7 @@ pub fn health() -> AsyncFnEndpoint {
                     Redirect { .. } => report.redirected += 1,
                     Mirror { .. } => report.mirrored += 1,
                     Retired { .. } => report.retired += 1,
+                    Delegate { .. } => report.delegated += 1,
                 }
             }
             let body = serde_json::to_vec_pretty(&report)
