@@ -12,7 +12,7 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-name/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-name/security/advisories/new) |
-| Last reviewed | 2026-11-05 |
+| Last reviewed | 2026-11-09 |
 
 ## What it emits that people read
 
@@ -33,7 +33,14 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   urn:name:history-source to add it`). A registry refused for a redirect's status or rule names
   the namespace, and the rule by its place and its match (`the namespace "x" cannot be claimed:
   its status 404 is not one of 301, 302, 303, 307 or 308`, `the namespace "x" cannot be claimed:
-  in rule 2 ("old/{y}"), its target uses {z}, which its match does not capture`).
+  in rule 2 ("old/{y}"), its target uses {z}, which its match does not capture`). A registry
+  refused for a prefix says why it cannot be held (`the namespace "-x" cannot be claimed: a
+  namespace prefix cannot begin with `-`: its administrative capability would be an exclusion,
+  which no grant can satisfy`). An `owner` that could not administer anything is refused naming
+  what would (`"x" cannot administer a namespace: an owner is a capability that begins
+  `urn:cap:name:admin:` and goes on to name something, such as `urn:cap:name:admin:staff`; leave
+  it out to use the namespace's own`). A refusal to administer names the capability the registry
+  records as its owner.
 - **Plain-text and JSON answers**: `urn:name:resolve` answers a strategy and its source,
   separated by a tab (`hosted`, then `urn:file:…`), and for a redirect its target, its status and
   the match of the rule that answered, if one did (`redirect`, `https://…`, `302`, `old/{x}`);

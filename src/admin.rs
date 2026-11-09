@@ -9,16 +9,20 @@
 //! | capability | grants |
 //! |---|---|
 //! | [`CAP_CLAIM`] | may become a tenant at all — create a namespace nobody holds |
-//! | `urn:cap:name:admin:<prefix>` | owns that namespace: may change how it resolves, or retire it |
+//! | the namespace's `owner` | owns that namespace: may change how it resolves, or retire it |
 //!
-//! An operator hands out the first sparingly (it is the signup gate) and the
-//! second automatically, to whoever claimed the prefix.
+//! An operator hands out the first sparingly (it is the signup gate). The second
+//! is whatever the registry records as [`Namespace::owner`]: by default
+//! `urn:cap:name:admin:<prefix>` ([`admin_scope`]), which is handed automatically
+//! to whoever claimed the prefix, or another scope in that family, for an operator
+//! provisioning a namespace on someone else's behalf. Once a different owner is
+//! recorded, the default scope confers nothing over that namespace.
 //!
 //! Both actions declare the **wildcard** form in `requires`, which is the coarse
 //! floor the kernel enforces — "holds some grant under this family". The exact
-//! per-prefix grant is checked here, at invocation, because only this code knows
-//! which prefix the request names. That is the parameterized-ACL shape used for
-//! filesystem and network scopes.
+//! grant is checked here, at invocation, because only this code knows which
+//! namespace the request names and what the registry says owns it. That is the
+//! parameterized-ACL shape used for filesystem and network scopes.
 //!
 //! ## A prefix never begins with `-`
 //!
@@ -29,8 +33,10 @@
 //! never grants: the claimant would own a namespace nobody, not even they, could
 //! ever administer, and the refusal would read as a puzzling `Denied` naming the
 //! very token they hold. Both faces refuse such a prefix up front instead, as an
-//! [`Error::InvalidArgument`] that says why, before any capability check. For
-//! the same reason a claim refuses an `owner` that is itself deny-shaped.
+//! [`Error::InvalidArgument`] that says why, before any capability check, and a
+//! registry file holding one is refused whole ([`ClaimError::ReservedPrefix`]). For
+//! the same reason a claim refuses an `owner` that no capability could use: one
+//! that is deny-shaped, or that is outside the family the kernel's floor admits.
 //!
 //! ## Retirement, not release
 //!
@@ -41,19 +47,24 @@
 use crate::registry::{
     ClaimError, Namespace, RedirectStatus, Registry, Repository, Rule, Strategy,
 };
+use crate::resolution::{unclaimed, visible};
 use crate::rules::STATUS_CHOICES;
 use crate::{load_versioned, REGISTRY_IRI};
 use ikigai_core::{
-    is_deny_scope, ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, ContentId, Description, Error,
-    Invocation, InvokeFuture, Iri, ReprType, Representation, Request, Result, Verb,
+    is_deny_scope, ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Capability, ContentId,
+    Description, Error, Invocation, InvokeFuture, Iri, ReprType, Representation, Request, Result,
+    Verb,
 };
 
 /// The capability permitting a *new* namespace to be claimed — the signup gate.
 pub const CAP_CLAIM: &str = "urn:cap:name:claim";
 
 /// The wildcard form of the per-namespace administrative capability, as declared
-/// in `requires`. The exact grant is `urn:cap:name:admin:<prefix>`.
+/// in `requires`. The exact grant is the namespace's [`Namespace::owner`].
 pub const CAP_ADMIN_ANY: &str = "urn:cap:name:admin:*";
+
+/// What every administrative capability begins with: the family [`CAP_ADMIN_ANY`] names.
+const ADMIN_FAMILY: &str = "urn:cap:name:admin:";
 
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 const TEXT_PLAIN_UTF8: &str = "text/plain;charset=utf-8";
@@ -62,25 +73,42 @@ fn text_plain_utf8() -> ReprType {
     ReprType::new("text/plain").with_param("charset", "utf-8")
 }
 
-/// The administrative capability for one namespace.
+/// The capability that administers a namespace unless its claim named another: what a
+/// claim records as its [`Namespace::owner`] by default.
 pub fn admin_scope(prefix: &str) -> String {
-    format!("urn:cap:name:admin:{prefix}")
+    format!("{ADMIN_FAMILY}{prefix}")
 }
 
-/// Require the exact per-prefix grant.
+/// Require the capability that owns `prefix`, and answer where the registry holds it.
+/// `doing` begins the refusal: `name: {doing} "x" needs <capability>`.
 ///
 /// The kernel has already enforced the wildcard floor; this is the half that
 /// distinguishes one tenant from another, so **omitting it would let any tenant
 /// administer any namespace**.
-fn require_admin(inv: &Invocation<'_>, prefix: &str) -> Result<()> {
-    let scope = admin_scope(prefix);
-    if inv.capability.allows(&scope) {
-        Ok(())
-    } else {
-        Err(Error::Denied(format!(
-            "name: administering {prefix:?} needs `{scope}`"
-        )))
+///
+/// A namespace the caller may not see is treated as one nobody claims, and a name
+/// nobody claims needs its default scope, so the answer is the same for both and a
+/// private namespace cannot be found by asking to administer it.
+pub(crate) fn require_admin(
+    registry: &Registry,
+    capability: &Capability,
+    prefix: &str,
+    doing: &str,
+) -> Result<usize> {
+    let at = registry
+        .namespaces
+        .iter()
+        .position(|ns| ns.prefix == prefix && visible(ns, capability));
+    let scope = at.map_or_else(
+        || admin_scope(prefix),
+        |at| registry.namespaces[at].owner.clone(),
+    );
+    if !capability.allows(&scope) {
+        return Err(Error::Denied(format!(
+            "name: {doing} {prefix:?} needs `{scope}`"
+        )));
     }
+    at.ok_or_else(|| unclaimed(prefix, None))
 }
 
 fn required(inv: &Invocation<'_>, name: &'static str) -> Result<String> {
@@ -133,19 +161,31 @@ pub(crate) fn refuse_reserved_prefix(prefix: &str) -> Result<()> {
     Ok(())
 }
 
-/// Refuse an `owner` that is an exclusion rather than a grant: it could never be
-/// held as authority, so it cannot administer anything.
-fn refuse_deny_owner(owner: &str) -> Result<()> {
-    if is_deny_scope(owner) {
-        return Err(Error::InvalidArgument {
-            name: "owner".into(),
-            detail: format!(
-                "`{owner}` is an exclusion (a deny-shaped capability scope), not a grant; \
-                 no capability can ever satisfy it, so it cannot own a namespace"
-            ),
-        });
-    }
-    Ok(())
+/// Refuse an `owner` no capability could administer with. An exclusion is never
+/// granted, and the kernel's floor admits only a capability holding something under
+/// [`ADMIN_FAMILY`], so anything outside it would be recorded and never usable.
+fn refuse_unusable_owner(owner: &str) -> Result<()> {
+    let detail = if is_deny_scope(owner) {
+        format!(
+            "`{owner}` is an exclusion (a deny-shaped capability scope), not a grant; \
+             no capability can ever satisfy it, so it cannot own a namespace"
+        )
+    } else if owner
+        .strip_prefix(ADMIN_FAMILY)
+        .is_none_or(|name| name.is_empty())
+    {
+        format!(
+            "{owner:?} cannot administer a namespace: an owner is a capability that \
+             begins `{ADMIN_FAMILY}` and goes on to name something, such as \
+             `{ADMIN_FAMILY}staff`; leave it out to use the namespace's own"
+        )
+    } else {
+        return Ok(());
+    };
+    Err(Error::InvalidArgument {
+        name: "owner".into(),
+        detail,
+    })
 }
 
 /// The `content` input every mutating action declares: the prefix, when piped.
@@ -289,6 +329,10 @@ fn claim_error(prefix: &str, error: ClaimError) -> Error {
         ClaimError::Overlaps(existing) => Error::Denied(format!(
             "name: {prefix:?} overlaps the claimed namespace {existing:?}"
         )),
+        bad @ ClaimError::ReservedPrefix => Error::InvalidArgument {
+            name: "prefix".into(),
+            detail: bad.to_string(),
+        },
         bad @ ClaimError::BadStatus(_) => Error::InvalidArgument {
             name: "status".into(),
             detail: format!("the namespace {prefix:?}: {bad}"),
@@ -323,12 +367,13 @@ pub fn claim() -> AsyncFnEndpoint {
             let repository = repository_arg(inv)?;
             // `owner` is optional so the ordinary case needs no ceremony: the
             // claimant becomes the administrator. An operator provisioning on
-            // someone else's behalf can name a different one.
+            // someone else's behalf can name a different one, and from then on
+            // only that one administers it.
             let owner = inv
                 .inline_str("owner")
                 .map(|s| s.trim().to_string())
                 .unwrap_or_else(|_| admin_scope(&prefix));
-            refuse_deny_owner(&owner)?;
+            refuse_unusable_owner(&owner)?;
 
             let (mut registry, token) = load_versioned(inv).await?;
             registry
@@ -395,7 +440,10 @@ pub fn claim() -> AsyncFnEndpoint {
                     )
                     .input(
                         ArgSpec::new("owner")
-                            .summary("the administering capability (defaults to the claimant's)")
+                            .summary(
+                                "the capability that will administer it, under \
+                                 urn:cap:name:admin: (defaults to the claimant's)",
+                            )
                             .optional()
                             .class(XSD_STRING),
                     )
@@ -410,13 +458,9 @@ pub fn admin() -> AsyncFnEndpoint {
     AsyncFnEndpoint::new("admin", |inv: &Invocation<'_>| -> InvokeFuture<'_> {
         Box::pin(async move {
             let prefix = prefix_arg(inv)?;
-            require_admin(inv, &prefix)?;
             let (mut registry, token) = load_versioned(inv).await?;
-            let entry = registry
-                .namespaces
-                .iter_mut()
-                .find(|ns| ns.prefix == prefix)
-                .ok_or_else(|| Error::NotFound(format!("name: no namespace claims {prefix:?}")))?;
+            let at = require_admin(&registry, inv.capability, &prefix, "administering")?;
+            let entry = &mut registry.namespaces[at];
 
             let message = match inv.request.verb {
                 Verb::Delete => {
@@ -446,7 +490,7 @@ pub fn admin() -> AsyncFnEndpoint {
             .title("Administer a claimed namespace")
             .summary(
                 "Sink changes how a namespace resolves; Delete retires it. Both need the \
-                 administrative capability for that specific prefix.",
+                 capability the registry records as that namespace's owner.",
             )
             .action(
                 ActionSpec::new(Verb::Sink)
@@ -1177,15 +1221,15 @@ mod tests {
         }
     }
 
-    /// A hand-edited registry can still carry a `-` prefix (the file loader is
-    /// not this face). Administering it says why it cannot work, BEFORE the
-    /// capability check, rather than a `Denied` naming the token the caller holds.
+    /// Administering a `-` prefix says why it cannot work, BEFORE the capability
+    /// check and before the registry is read, rather than a `Denied` naming the
+    /// token the caller holds. A file can no longer hold one, but this one has not
+    /// been loaded yet, and the refusal must be the same whichever comes first.
     #[test]
     fn administering_a_dash_prefix_is_refused_before_the_capability_check() {
-        let store = Store::new(
-            r#"{"namespaces":[{"prefix":"-acme","owner":"urn:cap:name:admin:-acme",
-                "strategy":"redirect","target":"https://acme.example/ns"}]}"#,
-        );
+        const HELD: &str = r#"{"namespaces":[{"prefix":"-acme","owner":"urn:cap:name:admin:-acme",
+                "strategy":"redirect","target":"https://acme.example/ns"}]}"#;
+        let store = Store::new(HELD);
         let kernel = kernel(&store);
         for (verb, args) in [
             (
@@ -1204,12 +1248,8 @@ mod tests {
             assert!(err.to_string().contains("cannot begin with `-`"));
         }
         assert_eq!(
-            store.read().namespaces[0].strategy,
-            Strategy::Redirect {
-                target: "https://acme.example/ns".into(),
-                status: RedirectStatus::default(),
-                rules: Vec::new(),
-            },
+            *store.0.lock().unwrap(),
+            HELD,
             "the registry must be untouched"
         );
     }
@@ -1235,6 +1275,122 @@ mod tests {
             .expect_err("an exclusion owns nothing");
             assert!(is_invalid(&err, "owner"), "got: {err:?}");
             assert!(err.to_string().contains("exclusion"), "says why: {err}");
+            assert!(store.read().namespaces.is_empty(), "nothing was written");
+        }
+    }
+
+    // --- the owner is the authority (ledger #883) ----------------------------
+
+    const STAFF: &str = "urn:cap:name:admin:staff";
+
+    fn update_as(store: &Store, prefix: &str, capability: &Capability) -> Result<String> {
+        call(
+            &kernel(store),
+            Verb::Sink,
+            "urn:name:admin",
+            &[
+                ("prefix", prefix),
+                ("strategy", "redirect"),
+                ("target", "https://acme.example/v2"),
+            ],
+            capability,
+        )
+    }
+
+    /// `owner=` was recorded and then ignored: the capability it named was refused,
+    /// and the one it replaced still administered the namespace.
+    #[test]
+    fn a_named_owner_administers_the_namespace_and_nothing_else_does() {
+        let store = Store::new(EMPTY);
+        let out = call(
+            &kernel(&store),
+            Verb::Sink,
+            "urn:name:claim",
+            &[
+                ("prefix", "acme"),
+                ("strategy", "redirect"),
+                ("target", "https://acme.example/ns"),
+                ("owner", STAFF),
+            ],
+            &claimant(),
+        )
+        .expect("an operator provisions it for someone else");
+        assert_eq!(out, format!("claimed acme\t{STAFF}\n"));
+
+        let err = update_as(&store, "acme", &owner_of("acme")).expect_err("not its owner");
+        assert!(matches!(err, Error::Denied(_)), "got: {err:?}");
+        assert!(err.to_string().contains(STAFF), "names its owner: {err}");
+
+        update_as(&store, "acme", &Capability::scoped([STAFF])).expect("its owner administers it");
+        call(
+            &kernel(&store),
+            Verb::Delete,
+            "urn:name:admin",
+            &[("prefix", "acme")],
+            &Capability::scoped([STAFF]),
+        )
+        .expect("its owner retires it");
+    }
+
+    /// An owner written in the file counts as one named at a claim does: an IRI prefix
+    /// is usually owned by a scope that does not spell the IRI.
+    #[test]
+    fn an_owner_from_the_file_administers_an_iri_prefix() {
+        let store = Store::new(
+            r#"{"namespaces":[{"prefix":"urn:urnid:acme:","owner":"urn:cap:name:admin:acme",
+                "strategy":"redirect","target":"https://acme.example/ns"}]}"#,
+        );
+        update_as(&store, "urn:urnid:acme:", &owner_of("acme")).expect("its owner administers it");
+    }
+
+    /// A namespace that is not public is absent to a capability not holding its owner,
+    /// here too: administering one answers in exactly the words a name nobody claims
+    /// does, whichever capability asks.
+    #[test]
+    fn a_private_namespace_cannot_be_found_by_administering_it() {
+        let store = Store::new(&format!(
+            r#"{{"namespaces":[{{"prefix":"hidden","owner":"{STAFF}","public":false,
+                "strategy":"redirect","target":"https://acme.example/ns"}}]}}"#
+        ));
+        let empty = Store::new(EMPTY);
+        for capability in [owner_of("hidden"), owner_of("other")] {
+            let held = update_as(&store, "hidden", &capability).expect_err("not its owner");
+            let absent = update_as(&empty, "hidden", &capability).expect_err("nobody claims it");
+            assert_eq!(held.to_string(), absent.to_string());
+            assert_eq!(
+                std::mem::discriminant(&held),
+                std::mem::discriminant(&absent)
+            );
+        }
+        update_as(&store, "hidden", &Capability::scoped([STAFF])).expect("its owner sees it");
+    }
+
+    /// The kernel admits only a capability holding a grant under the administrative
+    /// family, so an owner elsewhere, or none, would be recorded and never usable.
+    #[test]
+    fn an_owner_that_could_not_administer_is_refused() {
+        for owner in [
+            "urn:cap:org:staff",
+            "someone",
+            "",
+            "   ",
+            "urn:cap:name:admin:",
+        ] {
+            let store = Store::new(EMPTY);
+            let err = call(
+                &kernel(&store),
+                Verb::Sink,
+                "urn:name:claim",
+                &[
+                    ("prefix", "acme"),
+                    ("strategy", "redirect"),
+                    ("target", "https://acme.example/ns"),
+                    ("owner", owner),
+                ],
+                &claimant(),
+            )
+            .expect_err("it could never administer this");
+            assert!(is_invalid(&err, "owner"), "{owner:?} got: {err:?}");
             assert!(store.read().namespaces.is_empty(), "nothing was written");
         }
     }

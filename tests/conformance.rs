@@ -1649,9 +1649,15 @@ fn the_gates_are_the_exact_scopes() {
         }
     }
 
+    assert_eq!(
+        w.registry_reads(),
+        0,
+        "refused at the floor, before the registry was read"
+    );
+
     // The module's own rule: SOME admin grant passes the floor and is refused
     // here, naming the exact scope. Holding one namespace confers nothing over
-    // another.
+    // another. The registry says who owns it, so this refusal has to read it.
     for verb in [Verb::Sink, Verb::Delete] {
         let err = issue(
             &w.kernel,
@@ -1668,11 +1674,6 @@ fn the_gates_are_the_exact_scopes() {
         );
     }
     assert!(w.writes().is_empty(), "no refused call reached the store");
-    assert_eq!(
-        w.registry_reads(),
-        0,
-        "refused before the registry was read"
-    );
 
     // The right grants, and nothing wider, do the work.
     issue(

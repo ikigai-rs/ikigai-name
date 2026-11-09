@@ -56,7 +56,7 @@
 //! replaces as one operation, or refuses with [`Error::Conflict`], as
 //! [`REGISTRY_IRI`](crate::REGISTRY_IRI) does. The next flush reads again and retries.
 
-use crate::admin::{admin_scope, refuse_reserved_prefix, CAP_ADMIN_ANY};
+use crate::admin::{refuse_reserved_prefix, require_admin, CAP_ADMIN_ANY};
 use crate::history::{epoch_days, format_utc, AsOf};
 use crate::load;
 use crate::tenant::tenant_of;
@@ -402,25 +402,15 @@ fn bound<'a>(inv: &'a Invocation<'_>, name: &str) -> Result<&'a str> {
         .ok_or_else(|| Error::MissingArgument(name.to_string()))
 }
 
-/// The namespace's administrator or the operator, whose root capability allows every
-/// scope. The kernel has enforced the wildcard floor; this is the half that tells one
-/// namespace from another. Checked before the registry is read, so a refusal does not
-/// say whether the namespace exists.
+/// The namespace's owner or the operator, whose root capability allows every scope.
+/// The kernel has enforced the wildcard floor; this is the half that tells one
+/// namespace from another. [`require_admin`] answers alike for a namespace the caller
+/// may not see and one nobody claims, so a refusal does not say which it is.
 async fn authorized_prefix<'a>(inv: &'a Invocation<'_>) -> Result<&'a str> {
     let prefix = bound(inv, "prefix")?;
     refuse_reserved_prefix(prefix)?;
-    let scope = admin_scope(prefix);
-    if !inv.capability.allows(&scope) {
-        return Err(Error::Denied(format!(
-            "name: reading the count for {prefix:?} needs `{scope}`"
-        )));
-    }
     let registry = load(inv).await?;
-    if !registry.namespaces.iter().any(|ns| ns.prefix == prefix) {
-        return Err(Error::NotFound(format!(
-            "name: no namespace claims {prefix:?}"
-        )));
-    }
+    require_admin(&registry, inv.capability, prefix, "reading the count for")?;
     Ok(prefix)
 }
 

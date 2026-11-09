@@ -183,12 +183,21 @@ claiming and administering are separate:
 | capability | grants |
 |---|---|
 | `urn:cap:name:claim` | may become a tenant at all — the signup gate |
-| `urn:cap:name:admin:<prefix>` | owns that namespace: may change how it resolves, or retire it |
+| the namespace's `owner` | owns that namespace: may change how it resolves, or retire it |
+
+A namespace's `owner` is `urn:cap:name:admin:<prefix>` unless its claim says otherwise.
+An operator provisioning a namespace on someone else's behalf can name another with
+`owner=`, and that one must also start `urn:cap:name:admin:`, because that is the family
+the kernel's floor admits. Whichever capability the registry records is the only one that
+administers the namespace, reads its counts and reads what happened to its repository;
+`urn:cap:name:admin:<prefix>` confers nothing over a namespace owned by something else.
 
 Actions declare the **wildcard** (`urn:cap:name:admin:*`) — the coarse floor the
-kernel enforces — and the exact per-prefix grant is checked at invocation, since
-only that code knows which prefix a request names. Holding one namespace's admin
-capability therefore confers nothing over anyone else's.
+kernel enforces — and the exact owner is checked at invocation, since only that
+code knows which namespace a request names and who owns it. Holding one namespace's
+admin capability therefore confers nothing over anyone else's. A namespace that is
+not public answers as one nobody claims to anyone not holding its owner, here as
+everywhere.
 
 **A prefix never begins with `-`.** The prefix sits where `ikigai-core` (0.1.86 and
 later) reads a leading `-` as an *exclusion*: `urn:cap:name:admin:-acme` is a
@@ -197,10 +206,8 @@ namespace called `-acme` could never be administered by anyone, its claimant
 included. `urn:name:claim` and `urn:name:admin` therefore refuse such a prefix as
 an invalid argument that says why, before any capability check, and a claim
 refuses an explicit `owner` that is itself deny-shaped. A `-` anywhere else
-(`acme-corp`, `acme/-draft`) is an ordinary character. The registry file is not
-checked for this: a hand-written `-acme` entry still resolves, and administering
-it through `urn:name:admin` is refused with the same explanation (edit the file
-instead).
+(`acme-corp`, `acme/-draft`) is an ordinary character. A registry file is held to
+the same rule: one with a `-acme` entry is refused whole, naming it.
 
 ### Retirement, never release
 
@@ -584,7 +591,7 @@ always had. A host issues a refresh when a push webhook arrives and on a timer.
 version must conform to, and must be a `urn:file:` IRI.
 
 **The owner reads what happened** at `urn:name:git-status:{prefix}`, under
-`urn:cap:name:admin:{prefix}` or the operator's root capability, as one labeled line each:
+the namespace's `owner` or the operator's root capability, as one labeled line each:
 
 ```text
 repository: https://github.com/acme/vocab, branch main, file vocab/core.ttl
@@ -692,7 +699,7 @@ ikigai -c 'source urn:name:stat:namespace:resmud:period:2026-11'
 # 3
 ```
 
-Reading a count takes `urn:cap:name:admin:{prefix}` or the operator's root capability.
+Reading a count takes the namespace's `owner` or the operator's root capability.
 Both faces declare the wildcard form, like administration, and check the exact grant
 before reading the registry, so a refusal does not say whether a namespace exists.
 

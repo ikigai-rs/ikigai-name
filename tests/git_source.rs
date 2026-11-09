@@ -552,6 +552,41 @@ fn the_reason_is_readable_by_the_owner_and_nobody_else() {
     assert!(!err.to_string().contains("rdf-schema#comment"), "{err}");
 }
 
+/// What happened answers to the owner the registry names, as administering it does; a
+/// private namespace stays absent to anyone else (ledger #883).
+#[test]
+fn the_status_answers_to_the_owner_the_registry_names() {
+    let staff = Capability::scoped(["urn:cap:name:admin:staff"]);
+    let former = Capability::scoped(["urn:cap:name:admin:acme"]);
+    // A world for each registry: this one's source is cached and never cut.
+    let status = |public: bool, capability: &Capability| {
+        let world = World::new("hosted", false);
+        *world.registry.lock().unwrap() = entry("hosted", false).replace(
+            r#""owner":"urn:cap:name:admin:acme""#,
+            &format!(r#""owner":"urn:cap:name:admin:staff","public":{public}"#),
+        );
+        let request = Request::new(
+            Verb::Source,
+            Iri::parse("urn:name:git-status:acme").unwrap(),
+        );
+        block_on(world.kernel.issue(request, capability))
+    };
+
+    status(true, &staff).expect("its owner reads it");
+    let err = status(true, &former).expect_err("not its owner");
+    assert!(matches!(err, Error::Denied(_)), "{err:?}");
+    assert!(err.to_string().contains("admin:staff"), "{err}");
+
+    status(false, &staff).expect("its owner reads it");
+    let err = status(false, &former).expect_err("absent to anyone else");
+    assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+    assert!(
+        err.to_string()
+            .ends_with(r#"name: no namespace claims "acme""#),
+        "{err}"
+    );
+}
+
 /// A refused version is recorded once, so a timer does not rewrite the same news.
 #[test]
 fn a_refused_version_is_recorded_once() {
