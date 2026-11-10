@@ -974,13 +974,13 @@ pub(crate) fn status() -> AsyncFnEndpoint {
         Box::pin(async move {
             let prefix = bound_prefix(inv)?;
             crate::admin::refuse_reserved_prefix(prefix)?;
-            let scope = crate::admin::admin_scope(prefix);
-            if !inv.capability.allows(&scope) {
-                return Err(Error::Denied(format!(
-                    "name: reading what happened to {prefix:?} needs `{scope}`"
-                )));
-            }
             let registry = load(inv).await?;
+            crate::admin::require_admin(
+                &registry,
+                inv.capability,
+                prefix,
+                "reading what happened to",
+            )?;
             let (_, repository) = bound_namespace(&registry, prefix)?;
             let (status, _) = read_status(inv, prefix).await?;
             Ok(text_answer(status_lines(repository, &status)))

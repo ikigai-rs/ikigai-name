@@ -672,7 +672,8 @@ fn the_count_is_the_administrators_or_the_operators() {
     }
 }
 
-/// The refusal comes before the registry, so it does not say what is claimed.
+/// A refusal names the same capability whether or not the namespace is claimed, so it
+/// does not say what is claimed.
 #[test]
 fn a_refusal_does_not_disclose_whether_a_namespace_exists() {
     let w = World::new();
@@ -690,6 +691,59 @@ fn a_refusal_does_not_disclose_whether_a_namespace_exists() {
         .read("urn:name:stat:namespace:ghost", &Capability::root())
         .expect_err("the operator may be told");
     assert!(matches!(err, Error::NotFound(_)), "{err:?}");
+}
+
+/// The count answers to the namespace's owner, as administering it does, and a private
+/// namespace stays absent to anyone else (ledger #883).
+#[test]
+fn the_count_answers_to_the_owner_the_registry_names() {
+    let registry: &'static str = r#"{"namespaces":[
+        {"prefix":"acme","owner":"urn:cap:name:admin:staff",
+         "strategy":"redirect","target":"https://acme.example/"},
+        {"prefix":"hidden","owner":"urn:cap:name:admin:staff","public":false,
+         "strategy":"redirect","target":"https://hidden.example/"}]}"#;
+    let space = ikigai_name::space()
+        .bind(
+            Exact::new(REGISTRY_IRI),
+            FnEndpoint::new("registry-source", move |_: &Invocation<'_>| {
+                Ok(json(registry))
+            }),
+        )
+        .bind(
+            UriTemplate::parse(SEEN_TEMPLATE).unwrap(),
+            Store::default().endpoint(),
+        );
+    let kernel =
+        Kernel::new(Arc::new(space)).with_clock(Arc::new(Moving(AtomicU64::new(NOVEMBER))));
+    let read = |prefix: &str, cap: &Capability| {
+        let target = format!("urn:name:stat:namespace:{prefix}:period:2026-11");
+        block_on(kernel.issue(Request::new(Verb::Source, iri(&target)), cap))
+    };
+    let staff = Capability::scoped(["urn:cap:name:admin:staff"]);
+    read("acme", &staff).expect("its owner reads the count");
+    read("hidden", &staff).expect("its owner reads the count");
+
+    let err = read("acme", &Capability::scoped([admin_scope("acme")])).expect_err("not its owner");
+    assert!(matches!(err, Error::Denied(_)), "{err:?}");
+    assert!(err.to_string().contains("admin:staff"), "{err}");
+
+    for prefix_scope in ["hidden", "ghost"] {
+        let cap = Capability::scoped([admin_scope(prefix_scope)]);
+        let held = read(prefix_scope, &cap).expect_err("not visible");
+        assert!(matches!(held, Error::NotFound(_)), "{held:?}");
+        assert_eq!(
+            held.to_string(),
+            format!("not found: name: no namespace claims {prefix_scope:?}")
+        );
+    }
+    let other = Capability::scoped([admin_scope("other")]);
+    assert_eq!(
+        read("hidden", &other).unwrap_err().to_string(),
+        read("ghost", &other)
+            .unwrap_err()
+            .to_string()
+            .replace("ghost", "hidden")
+    );
 }
 
 #[test]

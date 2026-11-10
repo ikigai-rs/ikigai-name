@@ -114,7 +114,9 @@ pub struct Namespace {
     /// `urn:urnid:acme:` or `tag:urnid.org,2026:acme:` (see [`crate::iri`]).
     pub prefix: String,
     /// The capability that administers it. Holding it is what permits editing
-    /// this entry; it is not a display name.
+    /// this entry, reading its counts and what happened to its repository, and,
+    /// when it is not public, seeing it at all; it is not a display name. A claim
+    /// that names none records [`admin_scope`](crate::admin::admin_scope).
     pub owner: String,
     /// How this namespace produces its answer.
     #[serde(flatten)]
@@ -232,6 +234,9 @@ pub struct Registry {
 pub enum ClaimError {
     /// The prefix was empty, or every segment of it was.
     Empty,
+    /// The prefix begins with `-`, so `urn:cap:name:admin:<prefix>` would be an
+    /// exclusion, which core never grants.
+    ReservedPrefix,
     /// An existing claim overlaps: it contains the new prefix, the new prefix
     /// contains it, or they are equal. Carries the existing prefix so the
     /// refusal can name it.
@@ -260,6 +265,11 @@ impl std::fmt::Display for ClaimError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClaimError::Empty => write!(f, "a namespace prefix cannot be empty"),
+            ClaimError::ReservedPrefix => write!(
+                f,
+                "a namespace prefix cannot begin with `-`: its administrative capability \
+                 would be an exclusion, which no grant can satisfy"
+            ),
             ClaimError::Overlaps(existing) => {
                 write!(f, "overlaps the claimed namespace {existing:?}")
             }
@@ -524,6 +534,9 @@ impl Registry {
         if segments(prefix).is_empty() {
             return Err(ClaimError::Empty);
         }
+        if prefix.starts_with('-') {
+            return Err(ClaimError::ReservedPrefix);
+        }
         match self
             .namespaces
             .iter()
@@ -565,6 +578,31 @@ mod tests {
         Registry {
             namespaces: prefixes.iter().map(|p| hosted(p)).collect(),
             ..Registry::default()
+        }
+    }
+
+    /// The file is held to the rule a claim is: `-acme` would be administered by an
+    /// exclusion, which core never grants.
+    #[test]
+    fn a_file_with_a_prefix_beginning_with_a_dash_is_refused() {
+        let err = Registry::from_json(
+            br#"{"namespaces":[{"prefix":"-acme","owner":"o","strategy":"hosted","source":"urn:file:x"}]}"#,
+        )
+        .expect_err("reserved position");
+        assert!(
+            matches!(&err, LoadError::Refused { prefix, error: ClaimError::ReservedPrefix }
+                if prefix == "-acme"),
+            "got: {err:?}"
+        );
+        let text = err.to_string();
+        assert!(text.contains("\"-acme\""), "names it: {text}");
+        assert!(text.contains("cannot begin with `-`"), "says why: {text}");
+        assert_eq!(
+            Registry::default().may_claim("-acme"),
+            Err(ClaimError::ReservedPrefix)
+        );
+        for fine in ["acme-corp", "acme/-draft", "/-acme"] {
+            assert_eq!(Registry::default().may_claim(fine), Ok(()), "{fine}");
         }
     }
 
