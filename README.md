@@ -488,8 +488,10 @@ Forwarding goes through `urn:name:delegate`, which declares `urn:cap:net:*` and 
 capability not holding `urn:cap:net:<upstream's host>` exactly, before anything leaves. It reads
 the upstream's resolution at `{upstream}/-/resolution/iri/{name}` and its document at
 `{upstream}/{name}` through `urn:http:get`, and passes the answer back as it came, a refusal
-included. A host that binds no HTTP client delegates nothing and says so; the standalone server
-is such a host.
+included. With `as-of`, it forwards the normalized UTC instant as a query parameter on either
+face, so the upstream answers for the same date. Historical answers are never marked cacheable.
+A host that binds no HTTP client delegates nothing and says so; the standalone server is such
+a host.
 
 ### Over HTTP
 
