@@ -323,6 +323,9 @@ pub(crate) async fn forward(
     if let Some(wanted) = wanted {
         request = request.with_arg("as", ArgRef::Inline(wanted.as_bytes().to_vec()));
     }
+    if let Some(at) = as_of_arg(inv)? {
+        request = request.with_arg("as-of", ArgRef::Inline(at.to_string().into_bytes()));
+    }
     inv.issue(request).await
 }
 
@@ -341,7 +344,13 @@ fn encode(text: &str, keep: &[u8]) -> String {
 }
 
 /// The URL a delegation reads.
-pub(crate) fn upstream_url(upstream: &str, name: &str, face: Face, wanted: Option<&str>) -> String {
+pub(crate) fn upstream_url(
+    upstream: &str,
+    name: &str,
+    face: Face,
+    wanted: Option<&str>,
+    at: Option<&AsOf>,
+) -> String {
     let base = upstream.trim_end_matches('/');
     let name = encode(name.trim(), b":@,;");
     let mut url = match face {
@@ -351,6 +360,11 @@ pub(crate) fn upstream_url(upstream: &str, name: &str, face: Face, wanted: Optio
     if let Some(wanted) = wanted {
         url.push_str("?as=");
         url.push_str(&encode(wanted, b""));
+    }
+    if let Some(at) = at {
+        url.push(if wanted.is_some() { '&' } else { '?' });
+        url.push_str("as-of=");
+        url.push_str(&encode(&at.to_string(), b""));
     }
     url
 }
@@ -373,6 +387,7 @@ pub fn delegate() -> AsyncFnEndpoint {
                 Err(other) => return Err(other),
             };
             let wanted = inv.inline_str("as").ok().map(str::to_string);
+            let at = as_of_arg(inv)?;
             let delegate = Strategy::Delegate {
                 upstream: upstream.clone(),
             };
@@ -387,7 +402,7 @@ pub fn delegate() -> AsyncFnEndpoint {
                     "name: forwarding {name:?} to {upstream} needs {scope}"
                 )));
             }
-            let url = upstream_url(&upstream, &name, face, wanted.as_deref());
+            let url = upstream_url(&upstream, &name, face, wanted.as_deref(), at.as_ref());
             let get =
                 Iri::parse(HTTP_GET_IRI).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
             let request = Request::new(Verb::Source, get)
@@ -410,7 +425,11 @@ pub fn delegate() -> AsyncFnEndpoint {
             })?;
             // A pure function of the upstream's answer: as cacheable as that is, which
             // the kernel decides by taking the meet with the client's own expiry.
-            Ok(Representation::new(answered.repr_type.clone(), answered.bytes.clone()).cacheable())
+            // History stays uncacheable even when the upstream caches its answer.
+            Ok(crate::cacheable_unless_past(
+                Representation::new(answered.repr_type.clone(), answered.bytes.clone()),
+                at.as_ref(),
+            ))
         })
     })
     .with_description(
@@ -445,6 +464,7 @@ pub fn delegate() -> AsyncFnEndpoint {
                             .optional()
                             .class(XSD_STRING),
                     )
+                    .input(as_of_input())
                     // The default face. Whatever `as` asks for is the upstream's to serve,
                     // and is passed back as it came.
                     .output(APPLICATION_JSON),

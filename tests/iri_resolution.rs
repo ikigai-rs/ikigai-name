@@ -36,6 +36,14 @@ type Asked = Arc<Mutex<Vec<String>>>;
 /// A kernel over `json`, with a vocabulary file and, when `asked` is given, a stand-in
 /// `urn:http:get` answering every URL with a line naming it.
 fn kernel(json: &'static str, asked: Option<Asked>) -> Kernel {
+    kernel_with_past(json, asked, None)
+}
+
+fn kernel_with_past(
+    json: &'static str,
+    asked: Option<Asked>,
+    past: Option<&'static str>,
+) -> Kernel {
     let source = FnEndpoint::new("registry-source", move |_: &Invocation<'_>| {
         Ok(Representation::new(
             ReprType::new("application/json"),
@@ -66,6 +74,17 @@ fn kernel(json: &'static str, asked: Option<Asked>) -> Kernel {
             ))
         });
         space = space.bind(Exact::new("urn:http:get"), get);
+    }
+    if let Some(past) = past {
+        space = space.bind(
+            Exact::new(ikigai_name::HISTORY_IRI),
+            FnEndpoint::new("history", move |_: &Invocation<'_>| {
+                Ok(Representation::new(
+                    ReprType::new("application/json"),
+                    past.as_bytes().to_vec(),
+                ))
+            }),
+        );
     }
     Kernel::new(Arc::new(space))
 }
@@ -518,4 +537,115 @@ fn the_new_forms_round_trip_through_json() {
     let written = serde_json::to_string(&registry).unwrap();
     assert_eq!(written.matches("\"public\"").count(), 1, "{written}");
     assert_eq!(Registry::from_json(written.as_bytes()).unwrap(), registry);
+}
+
+/// A past registry chooses the upstream, and the upstream must be asked about
+/// that same instant rather than silently answering for today.
+#[test]
+fn historical_delegation_preserves_the_instant_on_every_face() {
+    const PAST: &str = r#"{
+      "unclaimed": {"strategy":"delegate", "upstream":"https://past.example/"},
+      "namespaces": [{"prefix":"elsewhere", "owner":"o", "strategy":"delegate",
+                      "upstream":"https://claimed.example/"}]
+    }"#;
+    let asked = Asked::default();
+    let kernel = kernel_with_past("{}", Some(asked.clone()), Some(PAST));
+    for (name, upstream) in [
+        ("elsewhere/a", "claimed.example"),
+        ("unclaimed/a", "past.example"),
+    ] {
+        for (endpoint, key, face, media) in [
+            (
+                "urn:name:resolve",
+                "path",
+                "-/resolution/iri/",
+                "text%2Fplain%3Bcharset%3Dutf-8",
+            ),
+            (
+                "urn:name:resolution",
+                "iri",
+                "-/resolution/iri/",
+                "application%2Fjson",
+            ),
+            ("urn:name:document", "path", "", "text%2Fturtle"),
+        ] {
+            source(
+                &kernel,
+                endpoint,
+                &[(key, name), ("as-of", "2026-03-31T17:30:00-07:00")],
+                &Capability::root(),
+            )
+            .expect("forwarded");
+            let expected = format!(
+                "https://{upstream}/{face}{}?as={media}&as-of=2026-04-01T00%3A30%3A00Z",
+                name.replace('/', "%2F")
+            );
+            assert_eq!(
+                asked.lock().unwrap().last(),
+                Some(&expected),
+                "{endpoint}: {name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_delegate_entry_preserves_as_of_without_a_media_type() {
+    let asked = Asked::default();
+    let kernel = kernel("{}", Some(asked.clone()));
+    source(
+        &kernel,
+        "urn:name:delegate",
+        &[
+            ("upstream", "https://urnid.org/"),
+            ("name", "acme/a"),
+            ("as-of", "2026-03-31"),
+        ],
+        &Capability::root(),
+    )
+    .expect("forwarded");
+    assert_eq!(
+        *asked.lock().unwrap(),
+        ["https://urnid.org/-/resolution/iri/acme%2Fa?as-of=2026-03-31T23%3A59%3A59Z"]
+    );
+}
+
+/// Even if an upstream marks its response cacheable, history is read each time.
+#[test]
+fn historical_delegation_is_not_cached() {
+    let get = FnEndpoint::new("cacheable-upstream", |_: &Invocation<'_>| {
+        Ok(Representation::new(ReprType::new("text/plain"), b"past".to_vec()).cacheable())
+    });
+    let kernel = Kernel::new(Arc::new(
+        ikigai_name::space().bind(Exact::new("urn:http:get"), get),
+    ));
+    let request = || {
+        Request::new(Verb::Source, Iri::parse("urn:name:delegate").unwrap())
+            .with_arg("upstream", ArgRef::Inline(b"https://urnid.org/".to_vec()))
+            .with_arg("name", ArgRef::Inline(b"acme/a".to_vec()))
+            .with_arg("as-of", ArgRef::Inline(b"2026-03-31".to_vec()))
+    };
+    for _ in 0..2 {
+        let repr = block_on(kernel.issue(request(), &Capability::root())).expect("past");
+        assert_eq!(repr.expiry, ikigai_core::Expiry::Always);
+    }
+}
+
+#[test]
+fn the_delegate_refuses_an_invalid_as_of_before_contacting_the_upstream() {
+    let asked = Asked::default();
+    let kernel = kernel("{}", Some(asked.clone()));
+    let err = source(
+        &kernel,
+        "urn:name:delegate",
+        &[
+            ("upstream", "https://urnid.org/"),
+            ("name", "acme/a"),
+            ("as-of", "March"),
+        ],
+        &Capability::root(),
+    )
+    .expect_err("not a date");
+    assert!(matches!(err, Error::InvalidArgument { name, .. } if name == "as-of"));
+    assert!(asked.lock().unwrap().is_empty());
 }
