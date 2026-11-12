@@ -12,7 +12,7 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
 | Status | Evaluation in progress. No conformance claim. |
 | Owner | the maintainers of this repository |
 | Report a barrier | [a GitHub issue](https://github.com/ikigai-rs/ikigai-name/issues/new?labels=accessibility) with the `accessibility` label; anything security-sensitive through [private vulnerability reporting](https://github.com/ikigai-rs/ikigai-name/security/advisories/new) |
-| Last reviewed | 2026-11-09 |
+| Last reviewed | 2026-11-12 |
 
 ## What it emits that people read
 
@@ -154,62 +154,39 @@ the owner's shapes.
 
 ## How it is tested
 
-- The unit tests in `src/docs.rs`: `every_palette_clears_the_text_floor`,
-  `every_palette_clears_the_ui_floor_for_edges`, `code_is_readable_on_its_own_background` and
-  `the_high_contrast_palette_clears_the_enhanced_floor` measure every palette pair with
-  `ikigai-a11y`; `auto_emits_both_schemes_behind_the_media_query`, `reduced_motion_is_honored`,
-  `an_unknown_theme_degrades_to_a_readable_palette`; `the_chooser_works_without_javascript` (a
-  form, `method="get"`, no `action`, an Apply button outside `<noscript>`, the label);
-  `the_page_lists_terms_and_targets_the_detail_pane` (`lang`, the live region);
-  `a_term_is_a_link_htmx_enhances`, `the_page_links_its_assets_and_inlines_none`,
-  `a_page_with_a_term_fills_the_region`; `term_text_is_escaped` and
-  `hostile_names_are_escaped_in_attributes_and_text`.
-- `tests/tenancy_http.rs` (with the `server` feature) pins the "Defined elsewhere" list's label,
-  its links and its text-only case (`a_term_lives_in_one_tenant_and_is_referenced_from_the_others`,
-  `only_a_web_iri_is_a_link_in_the_references`), and the words of the host and configuration
-  refusals.
-- `tests/through_sparql.rs` renders the page, a term's fragment and a term's page over the real
-  SPARQL engine (`the_page_documents_every_term_in_the_vocabulary`,
-  `a_term_request_returns_a_fragment_carrying_its_schema`,
-  `a_term_with_view_page_is_the_page_with_its_detail`,
-  `the_theme_argument_changes_the_rendered_palette`).
-- `tests/server_http.rs` (with the `server` feature) checks that the standalone server answers the
-  page for `Accept: text/html` and `?as=text/html`, and a `406` naming both faces otherwise; and
-  (`every_url_the_page_names_is_served`) that every URL the page names answers there as what the
-  page uses it for: the script as `text/javascript`, the stylesheet as `text/css`, each term's
-  link and htmx fetch as the page with that term, and the theme form's submission.
-  `tests/conformance.rs` (`errors_carry_no_registry_body`) pins that no error echoes the registry.
-- `tests/as_of.rs`, the unit tests in `src/document.rs` and
-  `as_of_is_refused_here_rather_than_answered_with_today` in `tests/server_http.rs` pin the words
-  and status of the `as-of` refusals, including that the page refuses it rather than showing the
-  current vocabulary.
-- `src/rules.rs`, `src/registry.rs` and `src/lib.rs` pin the words of each refusal of a status or
-  a rule (`every_bad_rule_is_refused_with_its_reason`,
-  `a_bad_status_refuses_the_whole_file_naming_the_namespace`,
-  `a_bad_rule_refuses_the_whole_file_naming_the_namespace_and_the_rule`) and the fields of a
-  redirect's answer (`resolve_names_the_status_and_the_rule_that_answered`).
-- `tests/active_names.rs` pins the words of a count, a report, an empty report, a flush and their
-  refusals (`the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`,
-  `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`), and `tests/active_names_http.rs`
-  that a failed flush reaches the server's log.
-- `src/git.rs` pins the words of the status (`the_status_is_one_labeled_line_each`), and of a bounded,
-  one-line reason (`a_reason_is_one_bounded_line_with_no_token`). `tests/git_source.rs` pins each
-  refresh's answer and each refusal, including that the words and the token do not reach someone who
-  is not the owner (`the_reason_is_readable_by_the_owner_and_nobody_else`,
-  `a_reader_echoing_the_token_does_not_put_it_in_the_record`) and that what a repository says on the
-  documentation page is escaped (`the_page_is_generated_and_what_the_repository_says_in_it_is_escaped`).
-  `tests/git_http.rs` (with the `git` feature) pins the webhook's refusals and the same page through
-  the real binary.
-- **Checked once by hand in a browser and with axe, not in CI** (2026-11-01, ledger #2737): the
-  standalone server's page in Chromium, with axe's WCAG 2.0, 2.1 and 2.2 A and AA rules under
-  light, dark and `prefers-contrast: more`, for the term list, a term chosen through htmx, a
-  term's page, and the dark and high-contrast themes: no violations and no console errors. The
-  same check confirmed that choosing a term keeps the live region element, swaps its contents,
-  leaves focus on the link and updates the address and title, and that Apply restyles the page.
-  No screen reader has read the page, and axe cannot run with JavaScript off; the JavaScript-off
-  path is covered by the HTTP test above. The "Defined elsewhere" list (2026-11-03, ledger #3047)
-  has not been through this check: it reuses the link color the palette tests measure, and is
-  otherwise pinned only by the tests above.
+Every named check has a result: Pass, Fail or Blocked. A Pass covers only the stated
+assertions, not overall accessibility or WCAG conformance. The automated checks below were
+run on 2026-11-12 against main commit
+[`279b0d8`](https://github.com/ikigai-rs/ikigai-name/commit/279b0d8a7d6e1496d35d3f17213e14172737f1d4),
+before this documentation-only update, using `cargo test --all-features`, Cargo 1.99.1 and
+rustc 1.99.1. This includes `server` and `git`. CI repeats that command's feature coverage
+through the [shared Rust workflow](.github/workflows/ci.yml) with `features: "*"`.
+The tests inspect generated output and exercise HTTP behavior; they do not establish how a
+browser renders it or how assistive technology presents it.
+
+| Check | Result | Evidence |
+|---|---|---|
+| Palette text, code, edges and high-contrast ratios | Pass | `src/docs.rs`: `every_palette_clears_the_text_floor`, `every_palette_clears_the_ui_floor_for_edges`, `code_is_readable_on_its_own_background`, `the_high_contrast_palette_clears_the_enhanced_floor`, via the all-feature command above, using `ikigai-a11y` 0.4.0. Measures specified color pairs, not rendered contrast in every state. |
+| Automatic and unknown themes; reduced-motion CSS | Pass | `src/docs.rs`: `auto_emits_both_schemes_behind_the_media_query`, `an_unknown_theme_degrades_to_a_readable_palette`, `reduced_motion_is_honored`. Checks emitted CSS, not browser preference behavior. |
+| Theme chooser without JavaScript | Pass | `src/docs.rs`: `the_chooser_works_without_javascript` checks the GET form, visible label and Apply button outside `noscript`; `tests/server_http.rs`: `every_url_the_page_names_is_served` exercises submission over HTTP. No interactive JavaScript-off browser run. |
+| Page language, term list, live-region markup, links, assets and selected detail | Pass | `src/docs.rs`: `the_page_lists_terms_and_targets_the_detail_pane`, `a_term_is_a_link_htmx_enhances`, `the_page_links_its_assets_and_inlines_none`, `a_page_with_a_term_fills_the_region`. Checks generated markup, not live announcements or focus behavior. |
+| Vocabulary text and attribute escaping | Pass | `src/docs.rs`: `term_text_is_escaped`, `hostile_names_are_escaped_in_attributes_and_text`; `tests/git_source.rs`: `the_page_is_generated_and_what_the_repository_says_in_it_is_escaped`. No browser execution. |
+| Tenant references, labels, web links, text-only IRIs and host refusals | Pass | `tests/tenancy_http.rs`, including `a_term_lives_in_one_tenant_and_is_referenced_from_the_others` and `only_a_web_iri_is_a_link_in_the_references`. Real server HTTP tests; no browser or assistive technology. |
+| Page, fragment, selected-term page and theme through SPARQL | Pass | `tests/through_sparql.rs`: `the_page_documents_every_term_in_the_vocabulary`, `a_term_request_returns_a_fragment_carrying_its_schema`, `a_term_with_view_page_is_the_page_with_its_detail`, `the_theme_argument_changes_the_rendered_palette`. Exercises the real engine; does not render in a browser. |
+| HTML negotiation, 406 wording and every page URL served | Pass | `tests/server_http.rs`, including `every_url_the_page_names_is_served`: stylesheet and script types, term links, htmx fetches and theme submission over HTTP. Does not execute htmx or evaluate CSP in a browser. |
+| Errors omit registry bodies; historical-date refusals | Pass | `tests/conformance.rs`: `errors_carry_no_registry_body`; `tests/as_of.rs`, unit tests in `src/document.rs`, and `tests/server_http.rs`: `as_of_is_refused_here_rather_than_answered_with_today`. Checks words and status, not their usability with assistive technology. |
+| Redirect status and rule refusals and answer fields | Pass | Unit tests in `src/rules.rs`, `src/registry.rs`, `src/lib.rs`, including `every_bad_rule_is_refused_with_its_reason`, `a_bad_status_refuses_the_whole_file_naming_the_namespace`, `a_bad_rule_refuses_the_whole_file_naming_the_namespace_and_the_rule`, `resolve_names_the_status_and_the_rule_that_answered`. Checks emitted words and fields. |
+| Counts, reports, empty reports, flushes and log refusals | Pass | `tests/active_names.rs`, including `the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`, `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`; `tests/active_names_http.rs` exercises failed-flush server logging. No terminal assistive-technology evaluation. |
+| Repository status labels, bounded reasons, refresh and webhook refusals | Pass | `src/git.rs`: `the_status_is_one_labeled_line_each`, `a_reason_is_one_bounded_line_with_no_token`; `tests/git_source.rs`, including `the_reason_is_readable_by_the_owner_and_nobody_else`, `a_reader_echoing_the_token_does_not_put_it_in_the_record`; `tests/git_http.rs` exercises the real binary. Checks output and access control, not spoken readability. |
+| Browser rendering, CSP, htmx focus/region/address/title behavior and Apply | Blocked | No current browser session was run. Historical Chromium check on 2026-11-01 ([PR #29](https://github.com/ikigai-rs/ikigai-name/pull/29)) reported no console errors, a preserved live region, focus remaining on the link, updated address/title and working Apply. Browser version and invocation were not recorded here; CI does not repeat it. It predates tenant references ([PR #31](https://github.com/ikigai-rs/ikigai-name/pull/31)). |
+| Automated browser accessibility checker (axe) | Blocked | No current axe run. Historical 2026-11-01 run in PR #29 reported no violations under WCAG 2.0/2.1/2.2 A and AA rules for the list, htmx detail, term page, light/dark/high-contrast themes and emulated `prefers-contrast: more`. axe and Chromium versions and invocation were not recorded here; CI does not repeat it. No JavaScript-off or tenant-reference evaluation. |
+| Manual keyboard navigation and visible focus | Blocked | No person's keyboard pass was performed for this review; no interactive browser session was available. CSS outlines and link markup alone do not verify navigation or focus visibility. |
+| Zoom, narrow-screen reflow and text spacing | Blocked | No current browser measurements or manual evaluation; no interactive browser session was used for this review. |
+| Screen reader, including live-region announcements | Blocked | No screen reader has been used on this output; no screen-reader session was available for this review. |
+| Screen magnifier | Blocked | No screen magnifier has been used on this output; no magnifier session was available for this review. |
+| Speech input | Blocked | No speech-input software has been used on this output; no speech-input session was available for this review. |
+| Switch access | Blocked | No switch-access software has been used on this output; no switch-access session was available for this review. |
+| Braille display | Blocked | No braille display has been used on this output; no braille display was available for this review. |
 
 ## Known limitations
 
@@ -257,7 +234,11 @@ Read this file before changing any output listed above: the page, a fragment, th
 error's words or the server's terminal text. A new color goes into every palette and passes the
 contrast tests in `src/docs.rs`; a change to the page keeps its `lang`, headings, landmarks, live
 region and labeled chooser, with a test that pins them. Say in the pull request what was tested,
-with what, and what was not.
+with what, and what was not. In the pull request's Accessibility section, give each check a
+row in a Check | Result | Evidence table with Pass, Fail or Blocked, the command or test,
+tool and version, or the reason it could not run. Keep unrun checks as Blocked, including
+assistive technology nobody used. A historical run CI does not repeat stays Blocked with
+its date.
 
 ## Reporting a barrier
 
@@ -273,9 +254,10 @@ you are comfortable sharing them. Anything security-sensitive goes through
 | Date | Change |
 |---|---|
 | 2026-10-31 | First version. |
-| 2026-11-01 | Terms are links that work without JavaScript, htmx swaps the region's contents, the theme chooser is a plain form, and the stylesheet and htmx are served by the standalone server (ledger #2737). Checked in a browser and with axe. |
-| 2026-11-03 | Tenants by host: the "Defined elsewhere" list, whole IRIs for references to another host, and the host refusals (ledger #3047). Not checked in a browser or with axe. |
-| 2026-11-03 | The `as-of` refusals (ledger #3049). The page itself is unchanged. |
-| 2026-11-04 | The active-name counts, report and flush, and the server's `--count-names` lines (ledger #3073). Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
-| 2026-11-05 | A namespace served from a git repository (ledger #3074): a refresh's line, a status, their refusals, the webhook's refusals and the server's `--git` lines. Plain text and refusals only; the page is unchanged, and now also renders a repository's vocabulary, escaped. Tested as above, with no assistive technology and no browser. |
-| 2026-11-05 | A redirect's status and rewrite rules (ledger #3077): more fields in `urn:name:resolve`'s answer, and the refusals of a status or a rule. Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
+| 2026-11-01 | Terms are links that work without JavaScript, htmx swaps the region's contents, the theme chooser is a plain form, and the stylesheet and htmx are served by the standalone server ([PR #29](https://github.com/ikigai-rs/ikigai-name/pull/29)). Checked in a browser and with axe. |
+| 2026-11-03 | Tenants by host: the "Defined elsewhere" list, whole IRIs for references to another host, and the host refusals ([PR #31](https://github.com/ikigai-rs/ikigai-name/pull/31)). Not checked in a browser or with axe. |
+| 2026-11-03 | The `as-of` refusals ([PR #32](https://github.com/ikigai-rs/ikigai-name/pull/32)). The page itself is unchanged. |
+| 2026-11-04 | The active-name counts, report and flush, and the server's `--count-names` lines ([PR #34](https://github.com/ikigai-rs/ikigai-name/pull/34)). Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
+| 2026-11-05 | A namespace served from a git repository ([PR #36](https://github.com/ikigai-rs/ikigai-name/pull/36)): a refresh's line, a status, their refusals, the webhook's refusals and the server's `--git` lines. Plain text and refusals only; the page is unchanged, and now also renders a repository's vocabulary, escaped. Tested as above, with no assistive technology and no browser. |
+| 2026-11-05 | A redirect's status and rewrite rules ([PR #35](https://github.com/ikigai-rs/ikigai-name/pull/35)): more fields in `urn:name:resolve`'s answer, and the refusals of a status or a rule. Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
+| 2026-11-12 | Record Pass / Fail / Blocked results with scope and evidence; rerun automated checks on main and mark historical browser runs and unrun assistive-technology checks Blocked. |
