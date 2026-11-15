@@ -7,7 +7,10 @@ edition = "2021"
 # 0.1.103 calls `is_multiple_of`, stable in 1.87) and the dev and server graphs are
 # refused outright (oxrdf, spargebra and the rest of oxigraph 0.5 declare 1.87).
 # Declaring it is what makes the shared CI's msrv job run rather than skip.
-rust-version = "1.87"
+# Raised to 1.88 for 0.7.0 (2026-11-15): a fresh resolve now takes icu 2.4 (through
+# url/idna) and sha2 0.11.1, which declare 1.88. Edition 2021's resolver does not
+# read rust-version, so 1.87 was already false for anyone resolving without our lock.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "Persistent-identifier resolution as an ikigai module: urn:name:* resolves curated IRIs against an externalized, capability-scoped registry — hosted, redirected or mirrored — so a namespace outlives the domain that first served it."
 authors = ["Brian Sletten <brian.sletten@gmail.com>"]
