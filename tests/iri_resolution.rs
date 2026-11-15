@@ -117,6 +117,8 @@ fn hosted(prefix: &str) -> Namespace {
         owner: "urn:cap:name:admin:x".into(),
         strategy: Strategy::Hosted {
             source: "urn:file:x".into(),
+            names: Default::default(),
+            documents: Vec::new(),
         },
         repository: None,
         public: true,

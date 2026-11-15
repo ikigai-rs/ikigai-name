@@ -165,12 +165,20 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
                     .await;
             }
         };
+        let checked = crate::names::check(
+            inv,
+            found,
+            &path,
+            at.as_ref(),
+            registry.limits.max_document_bytes,
+        )
+        .await?;
         let prefix = found.prefix.clone();
         let strategy = found.strategy.clone();
         let repository = found.repository.clone();
 
         let source = match &strategy {
-            Strategy::Hosted { source } => source.clone(),
+            Strategy::Hosted { source, .. } => source.clone(),
             Strategy::Mirror { origin } => origin.clone(),
             // The owner serves this one: the answer is core's typed redirect, which
             // an HTTP face sends as its status with a `Location` (ledger #3045).
@@ -223,10 +231,15 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
 
         let iri = Iri::parse(&source)
             .map_err(|e| Error::Endpoint(format!("name: bad source {source:?}: {e}")))?;
-        let stored = match (&at, &repository) {
-            (Some(at), Some(repository)) => git::read_past(inv, &prefix, repository, at).await?,
-            (Some(at), None) => read_as_of(inv, &source, at).await?,
-            (None, _) => inv.source(&iri).await?,
+        let stored = match checked {
+            Some(stored) => stored,
+            None => match (&at, &repository) {
+                (Some(at), Some(repository)) => {
+                    git::read_past(inv, &prefix, repository, at).await?
+                }
+                (Some(at), None) => read_as_of(inv, &source, at).await?,
+                (None, _) => inv.source(&iri).await?,
+            },
         };
 
         // The ceiling is checked on the way OUT, not on the way in: by the

@@ -203,6 +203,21 @@ fn strategy_from_args(inv: &Invocation<'_>) -> Result<Strategy> {
     match named.as_str() {
         "hosted" => Ok(Strategy::Hosted {
             source: required(inv, "source")?,
+            names: match inv.inline_str("names") {
+                Ok(value) => serde_json::from_value(serde_json::Value::String(value.to_string()))
+                    .map_err(|_| Error::InvalidArgument {
+                    name: "names".into(),
+                    detail: "write any, exact or terms".into(),
+                })?,
+                Err(_) => Default::default(),
+            },
+            documents: match inv.inline_str("documents") {
+                Ok(value) => serde_json::from_str(value).map_err(|e| Error::InvalidArgument {
+                    name: "documents".into(),
+                    detail: format!("write a JSON list of document names: {e}"),
+                })?,
+                Err(_) => Vec::new(),
+            },
         }),
         "redirect" => Ok(Strategy::Redirect {
             target: required(inv, "target")?,
@@ -337,6 +352,10 @@ fn claim_error(prefix: &str, error: ClaimError) -> Error {
             name: "status".into(),
             detail: format!("the namespace {prefix:?}: {bad}"),
         },
+        bad @ ClaimError::BadNames(_) => Error::InvalidArgument {
+            name: "names".into(),
+            detail: format!("the namespace {prefix:?}: {bad}"),
+        },
         bad @ ClaimError::BadRepository(_) => Error::InvalidArgument {
             name: "repository".into(),
             detail: format!("the namespace {prefix:?}: {bad}"),
@@ -432,6 +451,8 @@ pub fn claim() -> AsyncFnEndpoint {
                     .input(status_spec())
                     .input(rules_spec())
                     .input(repository_spec())
+                    .input(ArgSpec::new("names").summary("hosted: which names to answer; omitted means any").one_of(["any", "exact", "terms"]).optional().class(XSD_STRING))
+                    .input(ArgSpec::new("documents").summary("hosted: additional document names, as a JSON list of full paths or claimed IRIs").optional().class(XSD_STRING))
                     .input(
                         ArgSpec::new("origin")
                             .summary("mirror: the source of truth this copy tracks")
@@ -523,6 +544,8 @@ pub fn admin() -> AsyncFnEndpoint {
                     .input(status_spec())
                     .input(rules_spec())
                     .input(repository_spec())
+                    .input(ArgSpec::new("names").summary("hosted: which names to answer; omitted means any").one_of(["any", "exact", "terms"]).optional().class(XSD_STRING))
+                    .input(ArgSpec::new("documents").summary("hosted: additional document names, as a JSON list of full paths or claimed IRIs").optional().class(XSD_STRING))
                     .input(
                         ArgSpec::new("origin")
                             .summary("mirror: the source of truth this copy tracks")
@@ -785,6 +808,33 @@ mod tests {
         assert_eq!(stored.namespaces[0].owner, "urn:cap:name:admin:resmud");
     }
 
+    #[test]
+    fn a_claim_records_the_hosted_name_mode_and_documents() {
+        let store = Store::new(EMPTY);
+        call(
+            &kernel(&store),
+            Verb::Sink,
+            "urn:name:claim",
+            &[
+                ("prefix", "vocab/"),
+                ("strategy", "hosted"),
+                ("source", "urn:file:vocab"),
+                ("names", "exact"),
+                ("documents", r#"["vocab/core"]"#),
+            ],
+            &claimant(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.read().namespaces[0].strategy,
+            Strategy::Hosted {
+                source: "urn:file:vocab".into(),
+                names: crate::registry::Names::Exact,
+                documents: vec!["vocab/core".into()],
+            }
+        );
+    }
+
     /// The signup gate. Without it anyone reaching the endpoint could become a
     /// tenant, which is the whole of the multi-tenancy authority story.
     #[test]
@@ -974,7 +1024,9 @@ mod tests {
         assert_eq!(
             store.read().namespaces[0].strategy,
             Strategy::Hosted {
-                source: "urn:file:resmud-vocab".into()
+                source: "urn:file:resmud-vocab".into(),
+                names: Default::default(),
+                documents: Vec::new(),
             },
             "the registry must be untouched"
         );

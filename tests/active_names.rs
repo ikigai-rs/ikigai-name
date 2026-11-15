@@ -22,6 +22,8 @@ const REGISTRY: &str = r#"{"namespaces":[
   {"prefix":"lore","owner":"urn:cap:name:admin:lore","strategy":"hosted","source":"urn:test:vocab"},
   {"prefix":"acme","owner":"urn:cap:name:admin:acme","strategy":"redirect","target":"https://acme.example/ns"},
   {"prefix":"gone","owner":"urn:cap:name:admin:gone","strategy":"retired","reason":"ended"},
+  {"prefix":"exact","owner":"urn:cap:name:admin:exact","strategy":"hosted","source":"urn:test:vocab","names":"exact","documents":["exact/core"]},
+  {"prefix":"terms/","owner":"urn:cap:name:admin:terms","strategy":"hosted","source":"urn:test:terms","names":"terms"},
   {"prefix":"big","owner":"urn:cap:name:admin:big","strategy":"hosted","source":"urn:test:big"}
 ],"limits":{"max_document_bytes":64}}"#;
 
@@ -109,17 +111,29 @@ impl World {
         let store = Store::default();
         let vocab_reads = Arc::new(AtomicUsize::new(0));
         let reads = Arc::clone(&vocab_reads);
-        let space = bound(ikigai_name::space(), &store).bind(
-            Exact::new("urn:test:vocab"),
-            FnEndpoint::new("vocab", move |_: &Invocation<'_>| {
-                reads.fetch_add(1, Ordering::SeqCst);
-                Ok(
-                    Representation::new(ReprType::new("text/turtle"), VOCAB.as_bytes().to_vec())
-                        .cacheable()
-                        .depends_on("urn:test:vocab"),
+        let space =
+            bound(ikigai_name::space(), &store)
+                .bind(
+                    Exact::new("urn:test:terms"),
+                    FnEndpoint::new("terms", |_: &Invocation<'_>| {
+                        Ok(Representation::new(
+                            ReprType::new("text/turtle"),
+                            b"<https://e.test/terms/Thing> <urn:p> <urn:o> .".to_vec(),
+                        ))
+                    }),
                 )
-            }),
-        );
+                .bind(
+                    Exact::new("urn:test:vocab"),
+                    FnEndpoint::new("vocab", move |_: &Invocation<'_>| {
+                        reads.fetch_add(1, Ordering::SeqCst);
+                        Ok(Representation::new(
+                            ReprType::new("text/turtle"),
+                            VOCAB.as_bytes().to_vec(),
+                        )
+                        .cacheable()
+                        .depends_on("urn:test:vocab"))
+                    }),
+                );
         World {
             kernel: Kernel::new(Arc::new(space)).with_clock(clock.clone()),
             clock,
@@ -1004,4 +1018,20 @@ fn a_host_that_also_binds_doc_still_counts() {
     ))
     .unwrap();
     assert_eq!(text(&count), "1\n");
+}
+
+#[test]
+fn only_names_held_by_a_restricted_host_are_counted() {
+    let world = World::new();
+    for path in ["exact/core", "terms/Thing"] {
+        world.resolve(path).unwrap();
+        world.doc(path).unwrap();
+    }
+    for path in ["exact/made-up", "terms/made-up"] {
+        assert!(matches!(world.resolve(path), Err(Error::NotFound(_))));
+        assert!(matches!(world.doc(path), Err(Error::NotFound(_))));
+    }
+    world.flush().unwrap();
+    assert_eq!(world.count("exact", "2026-11"), "1\n");
+    assert_eq!(world.count("terms/", "2026-11"), "1\n");
 }

@@ -58,6 +58,11 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   for a delegate names the namespace and the upstream as written (`the namespace "x" cannot be
   claimed: its upstream "y" is not an https: or http: address with a host`, `its unclaimed can
   only be a delegate, and this is hosted`).
+- **Hosted-name membership** (`src/names.rs`, `src/registry.rs`): a name outside an
+  opted-in `exact` or `terms` set answers `name: "vocab/missing" is not held by the
+  namespace "vocab/"`. An invalid mode names the namespace and the choices (`the
+  namespace "vocab/" cannot be claimed: its names must be any, exact or terms, and
+  "all" is not one of them`). The refusal is plain text; it changes no page markup.
 - **The active-name counts** (`src/stat.rs`): a count answers a number and a newline (`3`); a
   namespace's report answers one line per month, the month, a tab and the count (`2026-11`, then
   `3`), or the sentence `name: "x" has no names counted yet`; a flush answers one labeled line
@@ -178,6 +183,7 @@ browser renders it or how assistive technology presents it.
 | HTML negotiation, 406 wording and every page URL served | Pass | `tests/server_http.rs`, including `every_url_the_page_names_is_served`: stylesheet and script types, term links, htmx fetches and theme submission over HTTP. Does not execute htmx or evaluate CSP in a browser. |
 | Errors omit registry bodies; historical-date refusals | Pass | `tests/conformance.rs`: `errors_carry_no_registry_body`; `tests/as_of.rs`, unit tests in `src/document.rs`, and `tests/server_http.rs`: `as_of_is_refused_here_rather_than_answered_with_today`. Checks words and status, not their usability with assistive technology. |
 | Redirect status and rule refusals and answer fields | Pass | Unit tests in `src/rules.rs`, `src/registry.rs`, `src/lib.rs`, including `every_bad_rule_is_refused_with_its_reason`, `a_bad_status_refuses_the_whole_file_naming_the_namespace`, `a_bad_rule_refuses_the_whole_file_naming_the_namespace_and_the_rule`, `resolve_names_the_status_and_the_rule_that_answered`. Checks emitted words and fields. |
+| Hosted-name membership and mode refusals | Pass | `tests/hosted_names.rs` checks the namespace and valid choices in loader refusals; `tests/server_http.rs`: `restricted_names_return_404_for_every_document_face_and_resolution` checks real HTTP responses. Run on 2026-11-15 with `cargo test --all-features`, rustc 1.99.1. Text and status only; no assistive technology evaluation. |
 | Counts, reports, empty reports, flushes and log refusals | Pass | `tests/active_names.rs`, including `the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`, `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`; `tests/active_names_http.rs` exercises failed-flush server logging. No terminal assistive-technology evaluation. |
 | Repository status labels, bounded reasons, refresh and webhook refusals | Pass | `src/git.rs`: `the_status_is_one_labeled_line_each`, `a_reason_is_one_bounded_line_with_no_token`; `tests/git_source.rs`, including `the_reason_is_readable_by_the_owner_and_nobody_else`, `a_reader_echoing_the_token_does_not_put_it_in_the_record`; `tests/git_http.rs` exercises the real binary. Checks output and access control, not spoken readability. |
 | Browser rendering, CSP, htmx focus/region/address/title behavior and Apply | Blocked | No current browser session was run. Historical Chromium check on 2026-11-01 ([PR #29](https://github.com/ikigai-rs/ikigai-name/pull/29)) reported no console errors, a preserved live region, focus remaining on the link, updated address/title and working Apply. Browser version and invocation were not recorded here; CI does not repeat it. It predates tenant references ([PR #31](https://github.com/ikigai-rs/ikigai-name/pull/31)). |
