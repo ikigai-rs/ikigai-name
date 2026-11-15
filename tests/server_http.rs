@@ -34,6 +34,8 @@ const VOCAB: &str = "@prefix rm: <https://iriref.org/resmud/core#> .\n\
                      rm:Weapon a rdfs:Class ; rdfs:label \"Weapon\" .\n";
 
 const REGISTRY: &str = r#"{"namespaces":[
+  {"prefix":"exact/","owner":"urn:cap:name:admin:exact","strategy":"hosted","source":"urn:file:vocab/core.ttl","names":"exact","documents":["exact/core"]},
+  {"prefix":"terms/","owner":"urn:cap:name:admin:terms","strategy":"hosted","source":"urn:file:vocab/terms.ttl","names":"terms"},
   {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
   {"prefix":"urn:urnid:acme:","owner":"urn:cap:name:admin:acme","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
   {"prefix":"urn:urnid:hidden:","owner":"urn:cap:name:admin:hidden","strategy":"hosted","source":"urn:file:vocab/core.ttl","public":false},
@@ -88,6 +90,11 @@ impl Server {
         let root = scratch_root();
         std::fs::create_dir_all(root.join("vocab")).expect("scratch root");
         std::fs::write(root.join("vocab/core.ttl"), VOCAB).expect("vocabulary");
+        std::fs::write(
+            root.join("vocab/terms.ttl"),
+            "<https://example.org/terms/Thing> <urn:p> <urn:o> .",
+        )
+        .expect("terms");
         std::fs::write(root.join("registry.json"), REGISTRY).expect("registry");
 
         // An ephemeral port, released for the server to take. Another process
@@ -484,4 +491,27 @@ fn two_servers_started_together_never_share_a_root() {
     let roots: Vec<PathBuf> = (0..1000).map(|_| scratch_root()).collect();
     let distinct: std::collections::HashSet<&PathBuf> = roots.iter().collect();
     assert_eq!(distinct.len(), roots.len(), "scratch roots collided");
+}
+
+#[test]
+fn restricted_names_return_404_for_every_document_face_and_resolution() {
+    let server = Server::start();
+    for path in ["/exact/made-up", "/terms/made-up"] {
+        for accept in [None, Some("text/html")] {
+            let response = server.get(path, accept);
+            assert_eq!(response.status, 404, "{path}: {}", response.body);
+        }
+        let response = server.get(&format!("/-/resolution/iri/{}", &path[1..]), None);
+        assert_eq!(response.status, 404, "{path}: {}", response.body);
+    }
+    for path in [
+        "/exact/",
+        "/exact/core",
+        "/terms/",
+        "/terms/Thing",
+        "/resmud/made-up",
+    ] {
+        let response = server.get(path, None);
+        assert_eq!(response.status, 200, "{path}: {}", response.body);
+    }
 }

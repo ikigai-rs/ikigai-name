@@ -55,6 +55,7 @@ pub mod git;
 pub mod health;
 pub mod history;
 pub mod iri;
+mod names;
 pub mod registry;
 pub mod resolution;
 pub mod rules;

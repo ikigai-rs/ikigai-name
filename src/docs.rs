@@ -5,9 +5,9 @@
 //! — **by transreption, not by maintaining a second copy**, so the documentation
 //! cannot drift from the vocabulary.
 //!
-//! Terms are extracted with SPARQL issued back through the kernel, so this crate
-//! carries no RDF parser and gains federation for free: a namespace hosted here
-//! and one mirrored from a peer are read the same way.
+//! This face extracts terms with SPARQL issued back through the kernel: a namespace
+//! hosted here and one mirrored from a peer are read the same way. Hosted-name
+//! membership in `terms` mode uses a separate Turtle reader.
 //!
 //! ## Color is a floor, not a preference
 //!
@@ -583,7 +583,7 @@ pub fn docs() -> AsyncFnEndpoint {
             // someone else's to document, and saying so is more useful than an
             // empty page that looks like a vocabulary with no terms.
             let graph = match &found.strategy {
-                Strategy::Hosted { source } => source.clone(),
+                Strategy::Hosted { source, .. } => source.clone(),
                 Strategy::Mirror { origin } => origin.clone(),
                 Strategy::Redirect { target, .. } => {
                     return Err(Error::Endpoint(format!(

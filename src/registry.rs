@@ -31,6 +31,25 @@ use crate::rules::{status_from_json, status_refusal};
 pub use crate::rules::{RedirectStatus, Rule};
 use serde::{Deserialize, Serialize};
 
+/// The names a hosted namespace answers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Names {
+    /// Every name under the prefix (the default).
+    #[default]
+    Any,
+    /// Only the prefix and explicitly listed documents.
+    Exact,
+    /// Also names defined as IRI subjects in the served Turtle document.
+    Terms,
+}
+
+impl Names {
+    fn is_any(&self) -> bool {
+        *self == Self::Any
+    }
+}
+
 /// How a claimed namespace produces its answer.
 ///
 /// The three cases are why this is a resolver rather than a redirector: a
@@ -42,6 +61,12 @@ pub enum Strategy {
     Hosted {
         /// The resource the documents are read from.
         source: String,
+        /// Which names this namespace answers; omitted means `any`.
+        #[serde(default, skip_serializing_if = "Names::is_any")]
+        names: Names,
+        /// Additional document names, written as full paths or claimed IRIs.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        documents: Vec<String>,
     },
     /// The owner serves it themselves; we answer with a redirect to `target`, or
     /// to where the first matching rule says.
@@ -256,6 +281,8 @@ pub enum ClaimError {
     },
     /// A repository binding the registry cannot hold. Carries the clause saying why.
     BadRepository(String),
+    /// An invalid hosted-name mode, as written.
+    BadNames(String),
     /// A `delegate` upstream that is not an `http:` or `https:` address with a host.
     /// Carries the upstream as written.
     BadUpstream(String),
@@ -282,6 +309,10 @@ impl std::fmt::Display for ClaimError {
                 pattern,
                 reason,
             } => write!(f, "in rule {rule} ({pattern:?}), {reason}"),
+            ClaimError::BadNames(value) => write!(
+                f,
+                "its names must be any, exact or terms, and {value} is not one of them"
+            ),
             ClaimError::BadRepository(reason) => write!(f, "its repository {reason}"),
             ClaimError::BadUpstream(upstream) => write!(
                 f,
@@ -373,7 +404,7 @@ impl Namespace {
         repository.check().map_err(ClaimError::BadRepository)?;
         let served = crate::git::source_iri(&self.prefix);
         match &self.strategy {
-            Strategy::Hosted { source: named } | Strategy::Mirror { origin: named }
+            Strategy::Hosted { source: named, .. } | Strategy::Mirror { origin: named }
                 if *named == served =>
             {
                 Ok(())
@@ -419,7 +450,13 @@ impl Strategy {
 fn refuse_by_name(raw: &serde_json::Value) -> Option<LoadError> {
     raw.get("namespaces")?.as_array()?.iter().find_map(|entry| {
         let prefix = entry.get("prefix")?.as_str()?;
-        let refusal = if entry.get("strategy")?.as_str()? == "redirect" {
+        let refusal = if entry.get("strategy")?.as_str()? == "hosted" {
+            entry.get("names").and_then(|value| {
+                serde_json::from_value::<Names>(value.clone())
+                    .err()
+                    .map(|_| ClaimError::BadNames(value.to_string()))
+            })
+        } else if entry.get("strategy")?.as_str()? == "redirect" {
             redirect_refusal(entry)
         } else {
             None
@@ -568,6 +605,8 @@ mod tests {
             owner: format!("urn:cap:name:admin:{prefix}"),
             strategy: Strategy::Hosted {
                 source: format!("urn:file:{prefix}"),
+                names: Default::default(),
+                documents: Vec::new(),
             },
             repository: None,
             public: true,
@@ -775,7 +814,9 @@ mod tests {
         assert_eq!(
             reg.lookup("resmud/core").map(|n| &n.strategy),
             Some(&Strategy::Hosted {
-                source: "urn:file:resmud-vocab".into()
+                source: "urn:file:resmud-vocab".into(),
+                names: Default::default(),
+                documents: Vec::new(),
             })
         );
     }

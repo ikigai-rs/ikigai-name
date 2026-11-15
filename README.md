@@ -79,8 +79,8 @@ A vocabulary only a parser can read will not be adopted. `urn:name:docs` renders
 a hosted namespace as a page, **transrepted from the same Turtle the namespace
 serves** — so the documentation cannot drift from the vocabulary, because there
 is no second copy of it. Terms are extracted with SPARQL issued back through the
-kernel, so this crate carries no RDF parser and a mirrored namespace is read
-exactly like a local one.
+kernel, so a mirrored namespace is read exactly like a local one. Hosted-name
+membership in `terms` mode uses a separate Turtle reader.
 
 The page works with JavaScript off, and htmx only improves it. Each term is a
 link to the page with that term's detail filled in; with htmx loaded, the same
@@ -171,9 +171,9 @@ A host embedding the module gets the same partition by minting
 a `urn:name:registry-source` that keys on `tenant_of`.
 
 **Not enforced: Turtle is served as stored.** A tenant's vocabulary may state
-anything about any IRI, and this crate carries no RDF parser. A file on urnid.org
-that declares an iriref.org term still says so in its Turtle; only the
-documentation face refuses to present that term as urnid.org's.
+anything about any IRI. A file on urnid.org that declares an iriref.org term
+still says so in its Turtle. The documentation face refuses to present that term
+as urnid.org's, and hosted `names: "terms"` membership also checks the tenant.
 
 ### Two authorities, because an unclaimed prefix has no owner
 
@@ -735,10 +735,44 @@ the current month includes them.
 | one name | 1,024 bytes; a longer one is answered and dropped the same way |
 | one stored set | 1,000,000 names; a count at that ceiling is a floor |
 
-These are ceilings because **a client picks the names**. A hosted namespace answers
-for any path under its prefix, so `/resmud/anything` counts as a name, and a client
-can inflate a count that way, or put arbitrary text in a name. Only the namespace's
-administrator and the operator can read it.
+These are ceilings because **a client picks the names**. By default, a hosted namespace
+answers for any path under its prefix, so `/resmud/anything` counts as a name, and a
+client can inflate a count that way, or put arbitrary text in a name. Set `names` to
+`exact` or `terms` to count only names the namespace holds (see below). Only the
+namespace's administrator and the operator can read the count.
+
+A hosted namespace can opt into a smaller set of names:
+
+```json
+{
+  "prefix": "vocab/",
+  "owner": "urn:cap:name:admin:vocab",
+  "strategy": "hosted",
+  "source": "urn:file:vocab.ttl",
+  "names": "terms",
+  "documents": ["vocab/core"]
+}
+```
+
+| `names` | Names answered |
+|---|---|
+| `any` (the default when omitted) | Every name under the prefix; existing registries keep their behavior |
+| `exact` | The prefix itself and the names in `documents` |
+| `terms` | The same explicit names, plus IRI subjects defined in the source Turtle document |
+
+`documents` is optional and lists full paths or claimed IRIs, rather than suffixes.
+Every listed name serves the namespace's same `source`. A mention as a predicate or
+object alone does not define a term. For a web term, its path is matched; with
+tenants, its host must also match the request's tenant. URN and tag terms use the
+same canonical comparison as other resolution. Prefixes and explicit documents
+use the usual path or IRI comparison too.
+
+A name outside the selected set returns 404 from both the document and resolution
+faces and is never counted. An invalid `names` value refuses the whole registry,
+naming the namespace. `terms` reads the current served document (or its historical
+version with `as-of`), under the document size and Turtle nesting limits. It needs
+no SPARQL binding. The claim and admin endpoints also accept `names=` and
+`documents=` (the latter as a JSON list).
 
 **A kernel with no clock counts nothing**, because it cannot say which month it is,
 and answers exactly as before. On a kernel with a clock, a counted answer is cacheable

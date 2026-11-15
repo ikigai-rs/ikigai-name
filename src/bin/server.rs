@@ -656,7 +656,7 @@ async fn check_site(dir: &std::path::Path, registry: &str, tenant: Option<&str>)
         .map_err(|e| Error::Endpoint(format!("name: {e}")))?;
     for namespace in &registry.namespaces {
         let source = match &namespace.strategy {
-            ikigai_name::registry::Strategy::Hosted { source } => source,
+            ikigai_name::registry::Strategy::Hosted { source, .. } => source,
             ikigai_name::registry::Strategy::Mirror { origin } => origin,
             _ => continue,
         };

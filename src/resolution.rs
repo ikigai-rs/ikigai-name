@@ -247,7 +247,7 @@ pub(crate) fn resolution(
     at: Option<&AsOf>,
 ) -> Result<Resolution> {
     let (target, status, rule) = match &namespace.strategy {
-        Strategy::Hosted { source } => (source.clone(), None, None),
+        Strategy::Hosted { source, .. } => (source.clone(), None, None),
         Strategy::Mirror { origin } => (origin.clone(), None, None),
         Strategy::Redirect { .. } => {
             let found = namespace.redirection(name).ok_or_else(|| {
@@ -535,9 +535,18 @@ pub(crate) async fn resolve_in(
             forward(inv, upstream, name, Face::Resolution, Some(face)).await
         }
         Answer::Claimed(namespace) => {
+            crate::names::check(
+                inv,
+                namespace,
+                name,
+                at.as_ref(),
+                registry.limits.max_document_bytes,
+            )
+            .await?;
             let found = resolution(namespace, name, tenant_of(inv.capability), at.as_ref())?;
-            // Pure in (registry, name, tenant); the kernel clamps to the registry's own
-            // expiry. Read from history every time when it is about the past.
+            // The kernel clamps to the registry's expiry, and in terms mode
+            // also tracks the vocabulary read by the membership check above.
+            // Read from history every time when it is about the past.
             let answered = crate::cacheable_unless_past(render(&found, face)?, at.as_ref());
             Ok(stat::counted(
                 seen,

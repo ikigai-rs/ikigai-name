@@ -891,7 +891,9 @@ fn conforms() {
     assert_eq!(
         after_claim.lookup("example").map(|ns| &ns.strategy),
         Some(&Strategy::Hosted {
-            source: VOCAB_IRI.into()
+            source: VOCAB_IRI.into(),
+            names: Default::default(),
+            documents: Vec::new(),
         }),
         "the claim landed"
     );
@@ -915,7 +917,9 @@ fn conforms() {
     assert_eq!(
         w.stored().lookup("resmud").map(|ns| &ns.strategy),
         Some(&Strategy::Hosted {
-            source: VOCAB_IRI.into()
+            source: VOCAB_IRI.into(),
+            names: Default::default(),
+            documents: Vec::new(),
         }),
         "the hosted namespace the read faces resolve was untouched by the walk"
     );
@@ -2018,6 +2022,8 @@ fn the_manifold_states_the_contract() {
                 ("status", false),
                 ("rules", false),
                 ("repository", false),
+                ("names", false),
+                ("documents", false),
                 ("origin", false),
                 ("owner", false),
             ],
@@ -2037,6 +2043,8 @@ fn the_manifold_states_the_contract() {
                 ("status", false),
                 ("rules", false),
                 ("repository", false),
+                ("names", false),
+                ("documents", false),
                 ("origin", false),
             ],
             outputs: TEXT,
