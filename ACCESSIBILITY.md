@@ -85,7 +85,9 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   `ikigai-name-server:`, with `--count-names` a line for each flush that failed or dropped names, and
   with `--git` a refresh's line whenever a namespace's answer changes. The webhook's refusals are
   sentences too (`name: this push has no signature that verifies for that namespace; ...`), and they
-  are the same whether or not the namespace exists.
+  are the same whether or not the namespace exists. With `--check`, success is a silent zero
+  exit; a failure names the namespace and problem in the loader's words, or names the
+  unreadable document or size ceiling, and with tenants also names the host. It writes no color.
 
 Not this repository's: the error page a browser gets when a request fails (the HTTP door's, from
 `ikigai-web`), the Turtle and other representations of a namespace (the namespace owner's

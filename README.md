@@ -859,6 +859,7 @@ feature adds the secret store, an HTTP client and the validator, and nothing els
 | `--listen ADDR` | `127.0.0.1:8080` | address to bind |
 | `--root DIR` | `.` | directory `urn:file:*` resolves within, and the jail |
 | `--registry NAME` | `registry.json` | the registry file within `--root` |
+| `--check` | off | validate the registry and read every hosted or mirrored document under its size ceiling, then exit without listening or writing |
 | `--cache-files` | off | cache file reads; see [Cacheability](#cacheability) |
 | `--tenant HOST` | none | answer for `HOST` from `--root/HOST`, and refuse any host not named; repeatable. See [Tenants by host](#tenants-by-host) |
 | `--count-names` | off | count the distinct names each namespace resolves per month. See [Active names](#in-the-standalone-server) |
@@ -867,6 +868,24 @@ feature adds the secret store, an HTTP client and the validator, and nothing els
 | `--git-every SECONDS` | `900` | with `--git`, how often to read them if no webhook says to |
 | `--secrets DIR` | the system's store | with `--git`, a directory holding tokens and webhook keys, outside `--root` |
 | `--git-forge HOST=KIND[@API]` | none | with `--git`, read repositories on `HOST` too; `KIND` is `github`, `gitlab` or `forgejo`; repeatable |
+
+To gate a registry change in CI, run:
+
+```sh
+ikigai-name-server --check --root /srv/namespaces
+# With tenants, check every named tenant's registry and documents:
+ikigai-name-server --check --root /srv/namespaces --tenant iriref.org --tenant urnid.org
+```
+
+`--check` uses the serving loader's all-or-nothing validation, including overlap and
+redirect rules. It also reads each hosted or mirrored document, including private
+namespaces, and applies `limits.max_document_bytes`. It exits 0 silently on success
+or non-zero with the loader's refusal or a sentence naming the unreadable or oversized
+namespace; a tenant refusal also names the host. `--registry` selects the file as usual.
+Only file read scope is granted. No listener, count flush, repository refresh or secret
+store is started, even with `--count-names` or `--git`. It checks readability and byte
+size, not Turtle syntax, generated pages or remote repository contents; a source that
+cannot be read locally is refused.
 
 The public surface is two routes, plus the documentation page's two assets, and with
 `--git` a signed webhook, served `routes_only` so anything else 404s before it reaches a
