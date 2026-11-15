@@ -1069,6 +1069,28 @@ task and limited to `seen/`, which no request can reach. `--git` adds another, l
   there, and a rule that matches more than one segment below a one-segment prefix
   is reachable through `urn:name:document` and `urn:name:resolve` but not over HTTP.
 
+## 0.8.0 migration
+
+A hosted namespace may say which names it holds. `"names"` in a registry entry is `"any"`
+(the default, and what every existing entry means: any path under the prefix answers the
+document), `"exact"` (the prefix and the paths listed in `documents`), or `"terms"` (the IRI
+subjects defined in the source Turtle, read with a nesting bound). A name outside the set
+answers `404` and is not counted. An invalid value refuses the whole registry, naming the
+namespace. Rust callers: `Strategy::Hosted` gains `names` and `documents`; construct it with
+`Names::Any` and an empty list to keep today's behavior.
+
+Counting gains two partitions per namespace and month, beside the active names:
+`urn:name:stat:rule:namespace:{prefix}:match:{rule}:period:{yyyy-mm}` (distinct names each
+redirect rule answered) and `urn:name:stat:miss:namespace:{prefix}:period:{yyyy-mm}` (names
+that used a redirect fallback or were refused by `names`). A stored set now carries `dropped`,
+the names a full buffer or the length limit kept out; a set written by 0.7.0 reads as zero
+dropped, and a strict reader of the stored files must accept the new field.
+
+`ikigai-name-server --report YYYY-MM [--as text/plain|text/turtle]` prints every tenant's
+stored counts for a month and exits, without listening or writing. `--target-health-every`
+and `--target-health-net` add opt-in link-rot checks of redirect targets in a build with the
+`git` feature; the plain `server` build refuses them.
+
 ## 0.7.0 migration
 
 Move all ikigai dependencies to core 0.3, including the standalone server on
@@ -1134,7 +1156,7 @@ resolution, capability-scoped administration, the HTML documentation face, conte
 negotiation, limits, cacheability, active names, and namespaces served from a git
 repository.
 
-**On crates.io** as `ikigai-name` (0.2.x): `cargo add ikigai-name` to embed it,
+**On crates.io** as `ikigai-name`: `cargo add ikigai-name` to embed it,
 or `cargo install --locked ikigai-name --features server` for the standalone
 `ikigai-name-server` binary. Running the `server` feature needs a directory holding `registry.json` and the documents it
 points at; embedded, a host binds `ikigai_name::space()` and nothing else.
