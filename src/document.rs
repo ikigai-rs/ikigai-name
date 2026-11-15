@@ -28,12 +28,12 @@
 use crate::git;
 use crate::history::{as_of_arg, as_of_input, load_as_of, no_page_as_of, read_as_of, when};
 use crate::load;
-use crate::registry::Strategy;
+use crate::registry::{Redirection, Strategy};
 use crate::resolution::{self, Answer, Face};
 use crate::stat::{self, Seen};
 use ikigai_core::{
     ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, Error, Invocation, InvokeFuture,
-    Iri, Request, Verb,
+    Iri, Redirect, RedirectStatus, Representation, Request, Verb,
 };
 use std::sync::Arc;
 
@@ -172,26 +172,20 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
         let source = match &strategy {
             Strategy::Hosted { source } => source.clone(),
             Strategy::Mirror { origin } => origin.clone(),
-            // The owner serves this one. Reporting where is what lets the
-            // HTTP face answer with a redirect instead of guessing.
+            // The owner serves this one: the answer is core's typed redirect, which
+            // an HTTP face sends as its status with a `Location` (ledger #3045).
             // The name did resolve, to the owner's node, whatever the face does
             // with the answer, so it counts.
-            Strategy::Redirect { target, .. } => {
+            Strategy::Redirect { .. } => {
                 if at.is_none() {
                     if let Some(seen) = seen {
                         seen.note(inv, &prefix, &path);
                     }
                 }
-                // The same answer urn:name:resolve gives this path, rules and all.
-                let target = found
-                    .redirection(&path)
-                    .map_or_else(|| target.clone(), |answer| answer.target);
-                return Err(Error::Endpoint(format!(
-                    "name: {prefix:?} redirects to {target}"
-                )));
+                return redirect(&found.redirection(&path), &prefix);
             }
             Strategy::Retired { reason } => {
-                return Err(Error::NotFound(format!(
+                return Err(Error::Gone(format!(
                     "name: {prefix:?} is retired{}: {reason}",
                     when(at.as_ref())
                 )))
@@ -296,6 +290,28 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
             current,
         ))
     })
+}
+
+/// The answer for a `redirect` namespace: the same target and status urn:name:resolve
+/// gives this path, rules and all, as core's typed redirect.
+fn redirect(found: &Option<Redirection<'_>>, prefix: &str) -> ikigai_core::Result<Representation> {
+    let found = found
+        .as_ref()
+        .ok_or_else(|| Error::Endpoint("name: a redirect namespace named no target".into()))?;
+    // A registry status is one of the five core has, so this always finds one.
+    let status = RedirectStatus::from_code(found.status.code()).ok_or_else(|| {
+        Error::Endpoint(format!(
+            "name: {prefix:?} has no redirect status {}",
+            found.status
+        ))
+    })?;
+    let redirect = Redirect::new(status, found.target.as_str()).map_err(|e| {
+        Error::Endpoint(format!(
+            "name: {prefix:?} redirects to {:?}, which is not an absolute IRI: {e}",
+            found.target
+        ))
+    })?;
+    Ok(Representation::redirect(redirect))
 }
 
 /// The contract shared by [`document`] and [`doc`]; only where `path` comes
@@ -503,15 +519,17 @@ mod tests {
         );
     }
 
-    /// A redirect namespace is someone else's to serve; the face needs to know
-    /// where so it can answer with a redirect rather than a guess.
+    /// A redirect namespace is someone else's to serve: the answer is core's typed
+    /// redirect, so a face sends its status and location rather than a guess.
     #[test]
-    fn a_redirected_namespace_reports_its_target() {
-        let err = get(&kernel(false), &[("path", "acme/thing")]).expect_err("not ours");
-        assert!(
-            err.to_string().contains("https://acme.example/ns"),
-            "names the target: {err}"
-        );
+    fn a_redirected_namespace_answers_with_a_redirect() {
+        for wanted in [CANONICAL, HTML] {
+            let answer = get(&kernel(false), &[("path", "acme/thing"), ("as", wanted)])
+                .expect("a redirect is an answer");
+            let redirect = answer.as_redirect().expect("a typed redirect");
+            assert_eq!(redirect.status.code(), 302, "the default, as {wanted}");
+            assert_eq!(redirect.location.as_str(), "https://acme.example/ns");
+        }
     }
 
     #[test]
@@ -525,17 +543,20 @@ mod tests {
     fn a_redirected_namespace_reports_the_target_its_rule_chose() {
         const RULES: &str = r#"{"namespaces":[{"prefix":"acme","owner":"x",
             "strategy":"redirect","target":"https://acme.example/ns",
-            "rules":[{"match":"old/{x}","target":"https://new.example/{x}"}]}]}"#;
+            "status":307,
+            "rules":[{"match":"old/{x}","target":"https://new.example/{x}","status":301}]}]}"#;
         let kernel = Kernel::new(Arc::new(space().bind(
             Exact::new("urn:name:registry-source"),
             serving("application/json", RULES),
         )));
-        for (path, want) in [
-            ("acme/old/a", "https://new.example/a"),
-            ("acme/other", "https://acme.example/ns"),
+        for (path, want, status) in [
+            ("acme/old/a", "https://new.example/a", 301),
+            ("acme/other", "https://acme.example/ns", 307),
         ] {
-            let err = get(&kernel, &[("path", path)]).expect_err("the owner serves it");
-            assert!(err.to_string().ends_with(want), "{path}: {err}");
+            let answer = get(&kernel, &[("path", path)]).expect("the owner serves it");
+            let redirect = answer.as_redirect().expect("a typed redirect");
+            assert_eq!(redirect.location.as_str(), want, "{path}");
+            assert_eq!(redirect.status.code(), status, "{path}");
         }
     }
 

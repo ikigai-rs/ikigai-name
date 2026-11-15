@@ -159,7 +159,7 @@ fn names_resolved_over_http_are_stored_in_files() {
         assert_eq!(server.get("/acme/vocab", None), 200);
     }
     assert_eq!(server.get("/nobody/here", None), 404, "unclaimed");
-    assert_eq!(server.get("/gone/thing", None), 404, "retired");
+    assert_eq!(server.get("/gone/thing", None), 410, "retired");
 
     let set = wait_for_set(&root, "resmud", 2);
     let period = set["period"].as_str().expect("a period").to_string();

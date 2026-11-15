@@ -1077,7 +1077,7 @@ mod tests {
             &Capability::root(),
         )
         .expect_err("retired");
-        assert!(matches!(err, Error::NotFound(_)), "got: {err:?}");
+        assert!(matches!(err, Error::Gone(_)), "got: {err:?}");
         assert!(
             err.to_string().contains("superseded"),
             "explains why: {err}"

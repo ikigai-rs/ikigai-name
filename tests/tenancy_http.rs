@@ -580,11 +580,8 @@ fn registry_config_and_redirects_are_per_tenant() {
 
     // The redirect exists on the tenant that claimed it, and nowhere else.
     let there = server.get(URNID, "/acme/thing");
-    assert_eq!(
-        there.status, 500,
-        "redirects are a known 500: {}",
-        there.body
-    );
+    assert_eq!(there.status, 302, "{}", there.body);
+    assert_eq!(there.header("location"), Some("https://acme.example/ns"));
     assert_eq!(server.get(IRIREF, "/acme/thing").status, 404);
 
     // urnid.org's ceiling refuses its own document and leaves iriref.org's alone.
