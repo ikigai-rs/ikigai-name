@@ -47,6 +47,7 @@
 //! `urn:name:registry`, `urn:name:resolve` and `urn:name:document` also answer as
 //! of a date, from the vocabulary's history rather than any cache; see [`history`].
 //! The counts are in [`stat`]. A namespace served from a git repository is in [`git`].
+//! With the `git` build, opt-in host-run redirect target checks are in `target_health`.
 
 #![deny(missing_docs)]
 
@@ -62,6 +63,8 @@ pub mod registry;
 pub mod resolution;
 pub mod rules;
 pub mod stat;
+#[cfg(feature = "git")]
+pub mod target_health;
 pub mod tenant;
 
 pub use admin::{admin, claim, CAP_ADMIN_ANY, CAP_CLAIM};

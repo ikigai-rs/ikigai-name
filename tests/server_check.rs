@@ -189,3 +189,38 @@ fn check_does_not_initialize_git_or_secrets() {
     assert!(!secrets.exists());
     assert!(!root.0.join("git").exists());
 }
+
+#[test]
+fn target_health_options_require_a_timer_and_an_explicit_host_together() {
+    let root = Root::new();
+    root.write("registry.json", GOOD);
+    refused(
+        root.check(&["--target-health-every", "60"]),
+        &["needed together"],
+    );
+    refused(
+        root.check(&["--target-health-net", "example.com"]),
+        &["needed together"],
+    );
+    refused(root.check(&["--target-health-every", "0"]), &["above zero"]);
+    refused(
+        root.check(&["--target-health-net", "example.com:8080"]),
+        &["without a port"],
+    );
+}
+
+#[cfg(not(feature = "git"))]
+#[test]
+fn the_plain_server_cannot_be_told_to_make_target_probes() {
+    let root = Root::new();
+    root.write("registry.json", GOOD);
+    refused(
+        root.check(&[
+            "--target-health-every",
+            "60",
+            "--target-health-net",
+            "example.com",
+        ]),
+        &["need a build with the git feature"],
+    );
+}
