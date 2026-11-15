@@ -73,6 +73,16 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   yyyy-mm, such as 2026-11`, `name: this host keeps no count of names resolved; bind <template> to
   add it`, `name: could not store the names resolved in "x" for 2026-11: <why>; they stay buffered,
   and 0 more were dropped since the last report`).
+- **The offline monthly report** (`src/stat.rs`, `--report MONTH` in the server): text
+  labels each line's month, tenant, namespace and metric (active names, misses, rule
+  counts or dropped names), and labels each rule by its match. Namespace, tenant and
+  rule text is quoted with control characters escaped. Missing sets are zero; an empty
+  registry says it has no namespaces to report. Turtle uses observation vocabulary,
+  identifies tenant and rule, and uses a distinct subject for every metric. Invalid
+  months and formats name the input and valid choices; failed reads exit without
+  partial report output. `tests/server_report.rs` checks the real binary over fixture
+  `seen/` sets, including tenant labels, empty output wording, Turtle parsing, and
+  errors. These are text and structural checks, not assistive-technology evaluation.
 - **A namespace served from a repository** (`src/git.rs`): a refresh answers one line naming the
   namespace, and what it did (`"acme": now serving <id>`, `"acme": unchanged, serving <id>`,
   `"acme": refused <id>, and the last good version keeps serving: <why>`, `"acme": nothing

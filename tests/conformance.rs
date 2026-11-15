@@ -102,6 +102,7 @@ const RULE_COUNT: &str = "rule-name-count";
 const MISS_COUNT: &str = "miss-name-count";
 const COUNT: &str = "active-name-count";
 const REPORT: &str = "namespace-report";
+const MONTHLY_REPORT: &str = "monthly-report";
 const FLUSH: &str = "seen-flush";
 const GIT_SOURCE: &str = "git-source";
 const GIT_REFRESH: &str = "git-refresh";
@@ -697,6 +698,7 @@ fn suite() -> Suite {
                 .binding("period", PAST)
                 .capability(owner_of("resmud")),
         )
+        .fixture(Fixture::new(MONTHLY_REPORT, Verb::Source).binding("period", PAST))
         // The store a host binds. Its Sink is walked with what it already holds, so the
         // set the walk's count reads is the same before and after.
         .fixture(Fixture::new("seen-source", Verb::Source).binding("key", "resmud:period:2026-01"))
@@ -793,8 +795,8 @@ fn declared(suite: Suite) -> Suite {
 /// held to a weaker standard.
 fn assert_shape(report: &Report) {
     assert_eq!(
-        report.endpoints, 29,
-        "twenty module endpoints, nine fixtures: {report}"
+        report.endpoints, 30,
+        "twenty-one module endpoints, nine fixtures: {report}"
     );
     // registry, resolve, docs, style, document, doc, health, active/rule/miss counts, report, git-source,
     // git-status: one Source each; claim, flush and git-refresh: one Sink each; admin: Sink +
@@ -802,7 +804,7 @@ fn assert_shape(report: &Report) {
     // and validator a repository reads through: one each.
     // resolution, resolution-iri and delegate, and the client delegation reads through:
     // one Source each.
-    assert_eq!(report.actions, 33, "{report}");
+    assert_eq!(report.actions, 34, "{report}");
     assert_eq!(
         report.checks.skipped().count(),
         0,
@@ -855,7 +857,17 @@ fn assert_only_unprobed(report: &Report, live: &[&str]) {
 
 /// With no clock no count can say a month is over, so every count is live.
 fn assert_nothing_unprobed(report: &Report) {
-    assert_only_unprobed(report, &[COUNT, GIT_STATUS, MISS_COUNT, REPORT, RULE_COUNT]);
+    assert_only_unprobed(
+        report,
+        &[
+            COUNT,
+            GIT_STATUS,
+            MISS_COUNT,
+            MONTHLY_REPORT,
+            REPORT,
+            RULE_COUNT,
+        ],
+    );
 }
 
 /// Over a live registry BODIES rightly declines every Source but the pure
@@ -881,6 +893,7 @@ fn assert_unprobed_only_live_bodies(report: &Report) {
         COUNT,
         GIT_STATUS,
         MISS_COUNT,
+        MONTHLY_REPORT,
         REPORT,
         RULE_COUNT,
     ]);
@@ -1889,6 +1902,7 @@ fn conforms_on_a_clock() {
             DOC,
             DOCUMENT,
             GIT_STATUS,
+            MONTHLY_REPORT,
             REPORT,
             RESOLUTION,
             RESOLUTION_IRI,
@@ -1960,8 +1974,8 @@ fn conforms_over_the_real_engine() {
     assert!(report.is_clean(), "{report}");
     assert_nothing_unprobed(&report);
     assert_eq!(
-        report.endpoints, 32,
-        "twenty, eight fixtures, four forms: {report}"
+        report.endpoints, 33,
+        "twenty-one, eight fixtures, four forms: {report}"
     );
 
     // The page is real: every term the vocabulary defines, none it does not.

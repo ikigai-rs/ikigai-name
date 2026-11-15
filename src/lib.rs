@@ -307,6 +307,10 @@ pub fn space() -> ikigai_core::EndpointSpace {
             stat::partition_count(seen.clone(), stat::CountKind::Rule),
         )
         .bind(template(stat::REPORT_TEMPLATE), stat::report(seen.clone()))
+        .bind(
+            template(stat::MONTHLY_REPORT_TEMPLATE),
+            stat::monthly_report(),
+        )
         .bind(Exact::new(FLUSH_IRI), stat::flush(seen))
         .bind(template(git::SOURCE_TEMPLATE), git::source())
         .bind(template(git::REFRESH_TEMPLATE), git::refresh())

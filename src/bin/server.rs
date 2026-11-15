@@ -103,6 +103,8 @@ struct Options {
     registry: String,
     cache_files: bool,
     check: bool,
+    report: Option<String>,
+    report_as: String,
     tenants: Vec<String>,
     count_names: bool,
     flush_every: Option<u64>,
@@ -131,6 +133,8 @@ fn usage() -> ! {
            --listen ADDR    address to bind (default 127.0.0.1:8080)\n  \
            --root DIR       directory urn:file:* resolves within (default .)\n  \
            --registry NAME  the registry file within --root (default registry.json)\n  \
+           --report MONTH   print stored monthly counts, then exit without listening or writing\n  \
+           --as TYPE        report as text/plain (default) or text/turtle\n  \
            --check          validate the registry and read its hosted documents, then exit;\n                   \
                             opens no port and writes nothing\n  \
            --cache-files    cache file reads; correct only if every change to\n                   \
@@ -164,6 +168,8 @@ fn options() -> Options {
     let mut registry = "registry.json".to_string();
     let mut cache_files = false;
     let mut check = false;
+    let mut report = None;
+    let mut report_as = "text/plain".to_string();
     let mut tenants = Vec::new();
     let mut count_names = false;
     let mut flush_every = None;
@@ -184,6 +190,8 @@ fn options() -> Options {
             "--registry" => registry = value(),
             "--cache-files" => cache_files = true,
             "--check" => check = true,
+            "--report" => report = Some(value()),
+            "--as" => report_as = value(),
             "--tenant" => tenants.push(value()),
             "--count-names" => count_names = true,
             "--flush-every" => {
@@ -223,6 +231,10 @@ fn options() -> Options {
         }
     }
 
+    if (check && report.is_some()) || (report.is_none() && report_as != "text/plain") {
+        eprintln!("ikigai-name-server: use --report MONTH with --as, and separately from --check");
+        std::process::exit(2)
+    }
     let listen = listen.parse().unwrap_or_else(|e| {
         eprintln!("ikigai-name-server: `{listen}` is not an address: {e}");
         std::process::exit(2)
@@ -248,6 +260,8 @@ fn options() -> Options {
         registry,
         cache_files,
         check,
+        report,
+        report_as,
         tenants,
         count_names,
         flush_every,
@@ -693,6 +707,62 @@ async fn check_site(dir: &std::path::Path, registry: &str, tenant: Option<&str>)
     Ok(())
 }
 
+/// Build a read-only kernel: no clock, timers, HTTP clients or write scopes.
+async fn report_site(
+    dir: &std::path::Path,
+    registry: &str,
+    tenant: Option<&str>,
+    period: &str,
+    wanted: &str,
+) -> Result<Vec<u8>> {
+    let names = EndpointSpace::new()
+        .bind(
+            Exact::new(REGISTRY_IRI),
+            registry_alias(registry.to_string()),
+        )
+        .bind(
+            UriTemplate::parse(SEEN_TEMPLATE).expect("valid template"),
+            seen_files(),
+        )
+        .bind(
+            UriTemplate::parse(ikigai_name::stat::MONTHLY_REPORT_TEMPLATE).expect("valid template"),
+            ikigai_name::stat::monthly_report(),
+        );
+    let kernel = Kernel::new(Arc::new(ikigai_core::Fallback::new(vec![
+        Arc::new(names),
+        Arc::new(ikigai_fs::space(dir)),
+    ])));
+    let mut scopes = vec![format!("urn:cap:fs:read:{}", dir.display())];
+    scopes.extend(tenant.and_then(tenant_scope));
+    // Held capabilities are exact grants, not wildcard grants. Read the registry
+    // through the kernel first, then grant precisely its owners for the local report.
+    let loaded = kernel
+        .issue(
+            Request::new(Verb::Source, Iri::parse(REGISTRY_IRI).expect("valid IRI")),
+            &Capability::scoped(scopes.clone()),
+        )
+        .await?;
+    let registry = ikigai_name::registry::Registry::from_json(&loaded.bytes)
+        .map_err(|e| Error::Endpoint(format!("name: {e}")))?;
+    scopes.extend(
+        registry
+            .namespaces
+            .iter()
+            .map(|namespace| namespace.owner.clone()),
+    );
+    // The action's family floor also needs a grant for an empty registry.
+    scopes.push("urn:cap:name:admin:report".to_string());
+    let target = Iri::parse(format!("urn:name:monthly-report:period:{period}"))
+        .map_err(|e| Error::Endpoint(format!("name: invalid report month {period:?}: {e}")))?;
+    let request = Request::new(Verb::Source, target)
+        .with_arg("as", ArgRef::Inline(wanted.as_bytes().to_vec()));
+    Ok(kernel
+        .issue(request, &Capability::scoped(scopes))
+        .await?
+        .bytes
+        .to_vec())
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let options = options();
@@ -712,6 +782,32 @@ async fn main() -> std::io::Result<()> {
     });
 
     let tenants = tenant_dirs(&root, &options.tenants);
+    if let Some(period) = &options.report {
+        let sites = if tenants.is_empty() {
+            vec![(None, &root)]
+        } else {
+            tenants
+                .iter()
+                .map(|(host, dir)| (Some(host.as_str()), dir))
+                .collect()
+        };
+        let mut report = Vec::new();
+        for (tenant, dir) in sites {
+            match report_site(dir, &options.registry, tenant, period, &options.report_as).await {
+                Ok(bytes) => report.extend(bytes),
+                Err(e) => {
+                    eprintln!(
+                        "ikigai-name-server: tenant {:?}: {e}",
+                        tenant.unwrap_or("default")
+                    );
+                    std::process::exit(1)
+                }
+            }
+        }
+        use std::io::Write;
+        std::io::stdout().lock().write_all(&report)?;
+        return Ok(());
+    }
     if options.check {
         let sites = if tenants.is_empty() {
             vec![(None, &root)]
