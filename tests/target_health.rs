@@ -111,6 +111,9 @@ impl Server {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // BSD/macOS inherit the listener's nonblocking mode. Request
+                        // headers must wait for bytes even if accept beat the client.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
@@ -119,7 +122,7 @@ impl Server {
                             && bytes.len() < 8192
                         {
                             let mut part = [0; 1024];
-                            let size = stream.read(&mut part).unwrap_or(0);
+                            let size = stream.read(&mut part).expect("read request headers");
                             if size == 0 {
                                 break;
                             }
