@@ -102,6 +102,7 @@ struct Options {
     root: PathBuf,
     registry: String,
     cache_files: bool,
+    check: bool,
     tenants: Vec<String>,
     count_names: bool,
     flush_every: Option<u64>,
@@ -130,6 +131,8 @@ fn usage() -> ! {
            --listen ADDR    address to bind (default 127.0.0.1:8080)\n  \
            --root DIR       directory urn:file:* resolves within (default .)\n  \
            --registry NAME  the registry file within --root (default registry.json)\n  \
+           --check          validate the registry and read its hosted documents, then exit;\n                   \
+                            opens no port and writes nothing\n  \
            --cache-files    cache file reads; correct only if every change to\n                   \
                             --root is followed by a restart (a deploy is; an\n                   \
                             editor is not)\n  \
@@ -160,6 +163,7 @@ fn options() -> Options {
     let mut root = PathBuf::from(".");
     let mut registry = "registry.json".to_string();
     let mut cache_files = false;
+    let mut check = false;
     let mut tenants = Vec::new();
     let mut count_names = false;
     let mut flush_every = None;
@@ -179,6 +183,7 @@ fn options() -> Options {
             "--root" => root = PathBuf::from(value()),
             "--registry" => registry = value(),
             "--cache-files" => cache_files = true,
+            "--check" => check = true,
             "--tenant" => tenants.push(value()),
             "--count-names" => count_names = true,
             "--flush-every" => {
@@ -242,6 +247,7 @@ fn options() -> Options {
         root,
         registry,
         cache_files,
+        check,
         tenants,
         count_names,
         flush_every,
@@ -619,6 +625,67 @@ fn routes(with_git: bool) -> RouteTable {
     RouteTable::new(table)
 }
 
+/// Validate through the same registry face as serving, then read every hosted or
+/// mirrored source, including private namespaces. Only the file read capability
+/// is granted: no owner, write, network, secret, timer or listener is needed.
+async fn check_site(dir: &std::path::Path, registry: &str, tenant: Option<&str>) -> Result<()> {
+    let names = EndpointSpace::new()
+        .bind(
+            Exact::new(REGISTRY_IRI),
+            registry_alias(registry.to_string()),
+        )
+        .bind(
+            Exact::new("urn:name:registry"),
+            ikigai_name::registry_endpoint(),
+        );
+    let kernel = Kernel::new(Arc::new(ikigai_core::Fallback::new(vec![
+        Arc::new(names),
+        Arc::new(ikigai_fs::space(dir)),
+    ])));
+    let mut scopes = vec![format!("urn:cap:fs:read:{}", dir.display())];
+    scopes.extend(tenant.and_then(tenant_scope));
+    let capability = Capability::scoped(scopes);
+    let request = Request::new(
+        Verb::Source,
+        Iri::parse("urn:name:registry").expect("a valid IRI"),
+    );
+    // This face calls the loader before returning anything. Keep its refusal
+    // intact, including the namespace and rule, rather than summarize it here.
+    let loaded = kernel.issue(request, &capability).await?;
+    let registry = ikigai_name::registry::Registry::from_json(&loaded.bytes)
+        .map_err(|e| Error::Endpoint(format!("name: {e}")))?;
+    for namespace in &registry.namespaces {
+        let source = match &namespace.strategy {
+            ikigai_name::registry::Strategy::Hosted { source } => source,
+            ikigai_name::registry::Strategy::Mirror { origin } => origin,
+            _ => continue,
+        };
+        let prefix = &namespace.prefix;
+        let iri = Iri::parse(source).map_err(|e| {
+            Error::Endpoint(format!("name: {prefix:?} has a bad source {source:?}: {e}"))
+        })?;
+        let stored = kernel
+            .issue(Request::new(Verb::Source, iri), &capability)
+            .await
+            .map_err(|e| {
+                Error::Endpoint(format!(
+                    "name: {prefix:?} cannot read its document {source:?}: {e}"
+                ))
+            })?;
+        // Like document(), the ceiling bounds the bytes served, after reading;
+        // this does not parse Turtle, render HTML or fetch remote repositories.
+        let ceiling = registry.limits.max_document_bytes;
+        if stored.bytes.len() > ceiling {
+            return Err(Error::Endpoint(format!(
+                "name: {prefix:?} is {} bytes, over this host's {ceiling}-byte ceiling \
+                 (raise limits.max_document_bytes in the registry)",
+                stored.bytes.len()
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let options = options();
@@ -638,6 +705,26 @@ async fn main() -> std::io::Result<()> {
     });
 
     let tenants = tenant_dirs(&root, &options.tenants);
+    if options.check {
+        let sites = if tenants.is_empty() {
+            vec![(None, &root)]
+        } else {
+            tenants
+                .iter()
+                .map(|(host, dir)| (Some(host.as_str()), dir))
+                .collect()
+        };
+        for (tenant, dir) in sites {
+            if let Err(e) = check_site(dir, &options.registry, tenant).await {
+                match tenant {
+                    Some(host) => eprintln!("ikigai-name-server: tenant {host}: {e}"),
+                    None => eprintln!("ikigai-name-server: {e}"),
+                }
+                std::process::exit(1)
+            }
+        }
+        return Ok(());
+    }
 
     let mut names = ikigai_name::space().bind(
         Exact::new(REGISTRY_IRI),

@@ -76,6 +76,11 @@ required-features = ["server"]
 # Spawns the server binary, so it needs the same feature; CI's `features: "*"`
 # enables it (a `required-features` target is otherwise silently skipped).
 [[test]]
+name = "server_check"
+path = "tests/server_check.rs"
+required-features = ["server"]
+
+[[test]]
 name = "server_http"
 path = "tests/server_http.rs"
 required-features = ["server"]
