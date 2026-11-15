@@ -94,6 +94,9 @@ use ikigai_web::{fixed_cap, AdmitFn, CapFn, EdgeConfig, HttpRequest, Refusal, Ro
 #[cfg(feature = "git")]
 #[path = "server/git.rs"]
 mod git;
+#[cfg(feature = "git")]
+#[path = "server/target_health.rs"]
+mod target_health;
 
 /// What this host was told to do. Flags and a config root only — no environment
 /// variables, which are the banned third channel.
@@ -108,6 +111,10 @@ struct Options {
     tenants: Vec<String>,
     count_names: bool,
     flush_every: Option<u64>,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    target_health_every: Option<u64>,
+    #[cfg_attr(not(feature = "git"), allow(dead_code))]
+    target_health_net: Vec<String>,
     git: bool,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     git_every: Option<u64>,
@@ -147,6 +154,11 @@ fn usage() -> ! {
                             month, in seen/ under --root or each tenant's directory\n  \
            --flush-every SECONDS\n                   \
                             with --count-names, how often to store them (default 60)\n  \
+           --target-health-every SECONDS\n                   \
+                            check redirect target bases at startup and this often\n                   \
+                            (needs a build with the git feature)\n  \
+           --target-health-net HOST\n                   \
+                            allow checks to this host; repeat for each host\n  \
            --git            serve namespaces from git repositories, with their last\n                   \
                             good copies in git/ under --root or each tenant's\n                   \
                             directory (needs a build with the git feature)\n  \
@@ -173,6 +185,8 @@ fn options() -> Options {
     let mut tenants = Vec::new();
     let mut count_names = false;
     let mut flush_every = None;
+    let mut target_health_every = None;
+    let mut target_health_net = Vec::new();
     let mut git = false;
     let mut git_every = None;
     let mut secrets = None;
@@ -206,6 +220,27 @@ fn options() -> Options {
                         std::process::exit(2)
                     }
                 }
+            }
+            "--target-health-every" => {
+                let seconds = value();
+                match seconds.parse() {
+                    Ok(seconds) if seconds > 0 => target_health_every = Some(seconds),
+                    _ => {
+                        eprintln!("ikigai-name-server: --target-health-every `{seconds}` is not a whole number of seconds above zero");
+                        std::process::exit(2)
+                    }
+                }
+            }
+            "--target-health-net" => {
+                let host = value();
+                let Some(host) = (!host.contains(':'))
+                    .then(|| ikigai_name::tenant::normalize_host(&host))
+                    .flatten()
+                else {
+                    eprintln!("ikigai-name-server: --target-health-net needs a DNS host or IPv4 address without a port");
+                    std::process::exit(2)
+                };
+                target_health_net.push(host);
             }
             "--git" => git = true,
             "--git-every" => {
@@ -247,6 +282,14 @@ fn options() -> Options {
         eprintln!("ikigai-name-server: --git-every, --secrets and --git-forge need --git");
         std::process::exit(2)
     }
+    if target_health_every.is_some() != !target_health_net.is_empty() {
+        eprintln!("ikigai-name-server: --target-health-every and --target-health-net HOST are needed together");
+        std::process::exit(2)
+    }
+    if target_health_every.is_some() && !cfg!(feature = "git") {
+        eprintln!("ikigai-name-server: target health checks need a build with the git feature, which links the outbound HTTP client");
+        std::process::exit(2)
+    }
     if git && !cfg!(feature = "git") {
         eprintln!(
             "ikigai-name-server: --git needs a build with the git feature, and this one links \
@@ -265,6 +308,8 @@ fn options() -> Options {
         tenants,
         count_names,
         flush_every,
+        target_health_every,
+        target_health_net,
         git,
         git_every,
         secrets,
@@ -869,12 +914,19 @@ async fn main() -> std::io::Result<()> {
         Arc::new(ikigai_ui::space()),
     ];
     #[cfg(feature = "git")]
-    if let Some(host) = &git_host {
+    if options.target_health_every.is_some() {
+        spaces.push(Arc::new(ikigai_name::target_health::space()));
+    }
+    #[cfg(feature = "git")]
+    if git_host.is_some() || options.target_health_every.is_some() {
         let transport = git::Transport::new().unwrap_or_else(|e| {
             eprintln!("ikigai-name-server: cannot make an HTTP client: {e}");
             std::process::exit(2)
         });
         spaces.push(Arc::new(ikigai_http::space(Arc::new(transport))));
+    }
+    #[cfg(feature = "git")]
+    if let Some(host) = &git_host {
         spaces.push(Arc::new(ikigai_secret::space(host.secrets.clone())));
         spaces.push(Arc::new(ikigai_shacl::space()));
     }
@@ -912,14 +964,15 @@ async fn main() -> std::io::Result<()> {
         }),
     );
     let space = ikigai_core::Fallback::new(spaces);
-    // A clock only when counting: it is how a name is put in its month, and with none
-    // the module counts nothing, so a server not asked to count is exactly as it was.
+    // Counting and host-run target checks use the injected kernel clock.
     let kernel = Kernel::new(Arc::new(space));
-    let kernel = Arc::new(if options.count_names {
-        kernel.with_clock(Arc::new(SystemClock))
-    } else {
-        kernel
-    });
+    let kernel = Arc::new(
+        if options.count_names || options.target_health_every.is_some() {
+            kernel.with_clock(Arc::new(SystemClock))
+        } else {
+            kernel
+        },
+    );
 
     let mut config = EdgeConfig {
         // A path not in the table 404s before it reaches a resource, so the
@@ -1038,8 +1091,36 @@ async fn main() -> std::io::Result<()> {
         String::new()
     };
 
+    #[cfg(feature = "git")]
+    let target_checks = if let Some(every) = options.target_health_every {
+        let capabilities = if tenants.is_empty() {
+            vec![target_health::capability(
+                &root,
+                None,
+                &options.target_health_net,
+            )]
+        } else {
+            tenants
+                .iter()
+                .map(|(host, dir)| {
+                    target_health::capability(dir, Some(host), &options.target_health_net)
+                })
+                .collect()
+        };
+        target_health::spawn(
+            Arc::clone(&kernel),
+            capabilities,
+            Duration::from_secs(every),
+        );
+        format!(", checking redirect targets every {every}s")
+    } else {
+        String::new()
+    };
+    #[cfg(not(feature = "git"))]
+    let target_checks = String::new();
+
     eprintln!(
-        "ikigai-name-server: {} → {} ({access}, jailed to {}, file cache {}{counting}{repositories})",
+        "ikigai-name-server: {} → {} ({access}, jailed to {}, file cache {}{counting}{repositories}{target_checks})",
         options.listen,
         REGISTRY_IRI,
         jailed,

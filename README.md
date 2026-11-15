@@ -650,6 +650,55 @@ rather than what was served, so **a version refused at the time is answered as c
 `forge_reader` can do this on GitHub and GitLab. Codeberg's commit listing ignores a date
 (checked 2026-11-05), so there it is refused rather than answered with the wrong commit.
 
+### Redirect target health
+
+A host can opt into link-rot checks in a build with the existing `git` feature,
+which already links the outbound client. Repository access and secrets need not
+be enabled. The plain `server` build cannot probe targets.
+
+```sh
+ikigai-name-server --root /srv/namespaces \
+  --target-health-every 3600 --target-health-net example.org \
+  --target-health-net docs.example.org
+```
+
+The timer runs at startup and then at the declared interval. Its capability holds
+`urn:cap:name:target-health-check`, registry read access, and only
+`urn:cap:net:<host>` for each explicitly allowed DNS host or IPv4 address. Use host
+names without ports; a grant covers that host's ports. The complete namespace's
+HTTP targets must be authorized before any of its probes leave. An unlisted host
+is refused and the job continues with other namespaces. Tenants use their own
+registries and separate results. Public HTTP requests receive no job authority.
+
+Each run makes one HEAD per distinct literal target in a redirect namespace:
+its fallback target and each rule's literal base before its first `{capture}`.
+It never substitutes a resolved name. Probes issue `urn:http:head` through the
+kernel under the job's capability and read no response body. The host supplies
+the transport and its timeout (30 seconds in the standalone server).
+`ikigai-http` follows redirects, checking the host, port, and path grant at every
+hop. A denied hop is `refused`; connection, TLS, timeout, and redirect failures
+are `unreachable`. Non-HTTP URLs and URLs with credentials are `unsupported`.
+HEAD returns `gone` for a final 404 or 410, and `answered` for other responses,
+including server errors. It does not expose exact status codes, so `status` is
+null unless supplied in the endpoint's `http-status` metadata (such as 304).
+These checks say nothing about individual names below a base.
+
+For an embedded host, bind `ikigai_name::target_health::space()` alongside
+`ikigai_name::space()` and a host-backed `ikigai_http::space(transport)`, inject
+a kernel clock, and issue Sink to
+`urn:name:target-health-check:namespace:{prefix}` under the job capability.
+Read Source at `urn:name:target-health:namespace:{prefix}` under the namespace's
+**recorded owner** capability. These two faces are opt-in; the regular name space
+does not bind them. There is no public HTTP route for them in the standalone server.
+
+The JSON answer labels `prefix`, `checked_at_unix_ms` (UTC Unix milliseconds, null without a kernel clock), and
+`targets`. Each target has its literal `target`, nullable HTTP `status`, `outcome`,
+and `elapsed_ms` until headers or failure. It retains only the latest completed
+check in memory; a restart loses it. A namespace with no check, or whose target
+bases changed since the check, answers NotFound until the host checks it. Results
+are uncacheable. No visitor, resolved request path, cookie, response header, body,
+or raw transport error is collected. Resolution never waits for a probe.
+
 ### Repositories in the standalone server
 
 The plain server still links no secret store and no outbound HTTP. Build it with the `git`

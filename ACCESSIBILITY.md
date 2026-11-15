@@ -83,6 +83,14 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   partial report output. `tests/server_report.rs` checks the real binary over fixture
   `seen/` sets, including tenant labels, empty output wording, Turtle parsing, and
   errors. These are text and structural checks, not assistive-technology evaluation.
+- **Redirect target health** (`src/target_health.rs`): the opt-in host job and owner-only
+  read face answer labeled JSON: `prefix`, `checked_at_unix_ms` (null without a kernel
+  clock), and `targets`. Each target labels its registry base, nullable HTTP `status`,
+  `outcome`, and `elapsed_ms`. HEAD outcomes distinguish `answered`, `gone`, `refused`,
+  `unreachable`, and `unsupported`; an exact status is absent when the HTTP endpoint
+  does not expose it. Refusals name the namespace and missing authority or check.
+  `tests/target_health.rs` checks the labels, authorization, injected clock, and HTTP
+  behavior; no assistive technology evaluation has been performed.
 - **A namespace served from a repository** (`src/git.rs`): a refresh answers one line naming the
   namespace, and what it did (`"acme": now serving <id>`, `"acme": unchanged, serving <id>`,
   `"acme": refused <id>, and the last good version keeps serving: <why>`, `"acme": nothing
@@ -96,6 +104,15 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   wrong (`the namespace "acme" cannot be claimed: its repository has the path "index.html", and only
   a Turtle file ending .ttl is served, so that repository HTML or JavaScript never reaches this
   origin`).
+- **Redirect target health** (`src/target_health.rs`, opt-in with the `git` build):
+  JSON labels the namespace, check time in Unix milliseconds, and each literal target's
+  nullable HTTP status, outcome (`answered`, `unreachable`, or `unsupported`), and elapsed
+  milliseconds. An absent or outdated result says the namespace has no check for its current
+  targets and names the host job to run. Refusals name the namespace and required owner or
+  network capability. The server's `--target-health-every` and repeatable
+  `--target-health-net HOST` options name the required pairing and reject invalid intervals
+  and hosts in plain text. The startup line says how often targets are checked; job failures
+  are labeled `target health job`. No response body or transport error text is emitted.
 - **The standalone server's terminal text** (`src/bin/server.rs`, `src/bin/server/git.rs`): its usage
   text, a startup line saying where it listens, what it may read, which tenants it answers for,
   whether it counts names and how often it reads repositories, refusals starting
@@ -197,6 +214,7 @@ browser renders it or how assistive technology presents it.
 | Redirect status and rule refusals and answer fields | Pass | Unit tests in `src/rules.rs`, `src/registry.rs`, `src/lib.rs`, including `every_bad_rule_is_refused_with_its_reason`, `a_bad_status_refuses_the_whole_file_naming_the_namespace`, `a_bad_rule_refuses_the_whole_file_naming_the_namespace_and_the_rule`, `resolve_names_the_status_and_the_rule_that_answered`. Checks emitted words and fields. |
 | Hosted-name membership and mode refusals | Pass | `tests/hosted_names.rs` checks the namespace and valid choices in loader refusals; `tests/server_http.rs`: `restricted_names_return_404_for_every_document_face_and_resolution` checks real HTTP responses. Run on 2026-11-15 with `cargo test --all-features`, rustc 1.99.1. Text and status only; no assistive technology evaluation. |
 | Counts, reports, empty reports, flushes and log refusals | Pass | `tests/active_names.rs`, including `the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`, `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`; `tests/active_names_http.rs` exercises failed-flush server logging. Rule and miss count output, distinct Turtle variables, administrative access and server persistence are covered by the same suites (2026-11-15, `cargo test --all-features`, rustc 1.99.1). No terminal assistive-technology evaluation. |
+| Redirect target health and timer option refusals | Pass | `tests/target_health.rs` checks labeled JSON, absent and outdated results, owner and tenant isolation, HTTP statuses, and a real per-tenant timer. `tests/server_check.rs` checks option pairing, interval and host refusals, and the plain build refusal. Run on 2026-11-15 with all features and the plain `server` build. Text and structure only; no assistive-technology evaluation. |
 | Repository status labels, bounded reasons, refresh and webhook refusals | Pass | `src/git.rs`: `the_status_is_one_labeled_line_each`, `a_reason_is_one_bounded_line_with_no_token`; `tests/git_source.rs`, including `the_reason_is_readable_by_the_owner_and_nobody_else`, `a_reader_echoing_the_token_does_not_put_it_in_the_record`; `tests/git_http.rs` exercises the real binary. Checks output and access control, not spoken readability. |
 | Browser rendering, CSP, htmx focus/region/address/title behavior and Apply | Blocked | No current browser session was run. Historical Chromium check on 2026-11-01 ([PR #29](https://github.com/ikigai-rs/ikigai-name/pull/29)) reported no console errors, a preserved live region, focus remaining on the link, updated address/title and working Apply. Browser version and invocation were not recorded here; CI does not repeat it. It predates tenant references ([PR #31](https://github.com/ikigai-rs/ikigai-name/pull/31)). |
 | Automated browser accessibility checker (axe) | Blocked | No current axe run. Historical 2026-11-01 run in PR #29 reported no violations under WCAG 2.0/2.1/2.2 A and AA rules for the list, htmx detail, term page, light/dark/high-contrast themes and emulated `prefers-contrast: more`. axe and Chromium versions and invocation were not recorded here; CI does not repeat it. No JavaScript-off or tenant-reference evaluation. |
@@ -243,8 +261,8 @@ with people or assistive technology:
 - On the standalone server, the owner reads a refusal in the forge's webhook deliveries, which is that
   forge's page rather than this module's, and on GitLab, which this door does not accept, or for a
   refusal the timer found, nowhere. Only the operator can read `git/status.{prefix}.json` there.
-- A status on a kernel with no clock holds no times, and the standalone server has none without
-  `--count-names`.
+- A status on a kernel with no clock holds no times, and the standalone server injects one with
+  `--count-names` or `--target-health-every`.
 - A refusal for a host that is not a tenant cannot say which host would work: it names the host it
   was given and no next step, because the list of tenants is not this refusal's to disclose.
 
