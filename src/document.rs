@@ -171,6 +171,7 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
             &path,
             at.as_ref(),
             registry.limits.max_document_bytes,
+            seen,
         )
         .await?;
         let prefix = found.prefix.clone();
@@ -185,6 +186,7 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
             // The name did resolve, to the owner's node, whatever the face does
             // with the answer, so it counts.
             Strategy::Redirect { .. } => {
+                stat::note_redirect(seen, inv, at.as_ref(), found, &path);
                 if at.is_none() {
                     if let Some(seen) = seen {
                         seen.note(inv, &prefix, &path);

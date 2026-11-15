@@ -463,8 +463,15 @@ fn file_part(prefix: &str) -> String {
     name
 }
 
-/// The file behind a key of [`SEEN_TEMPLATE`]: flat under `seen/`.
+/// The file behind a store key: active names under `seen/`, other partitions
+/// under `seen/partitions/`.
 fn seen_file(key: &str) -> Option<String> {
+    // `-` cannot begin a namespace. Partition files therefore cannot collide
+    // with any active-name file, even if a prefix contains partition delimiters.
+    let (dir, key) = match key.strip_prefix("-stat:") {
+        Some(key) => ("seen/partitions", key),
+        None => (SEEN_DIR, key),
+    };
     let (prefix, period) = match key.split_once(":period:") {
         Some((prefix, period)) => (prefix, period),
         None => (key, "periods"),
@@ -477,7 +484,7 @@ fn seen_file(key: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "urn:file:{SEEN_DIR}/{}.{period}.json",
+        "urn:file:{dir}/{}.{period}.json",
         file_part(prefix)
     ))
 }

@@ -14,6 +14,7 @@ pub(crate) async fn check(
     name: &str,
     at: Option<&AsOf>,
     ceiling: usize,
+    seen: Option<&crate::stat::Seen>,
 ) -> Result<Option<Representation>> {
     let Strategy::Hosted {
         source,
@@ -76,6 +77,7 @@ pub(crate) async fn check(
             return Ok(Some(stored));
         }
     }
+    crate::stat::note_miss(seen, inv, at, &namespace.prefix, name);
     Err(Error::NotFound(format!(
         "name: {name:?} is not held by the namespace {:?}",
         namespace.prefix

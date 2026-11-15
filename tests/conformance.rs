@@ -98,6 +98,8 @@ const DOCS: &str = "docs";
 const STYLE: &str = "style";
 const DOCUMENT: &str = "document";
 const HEALTH: &str = "health";
+const RULE_COUNT: &str = "rule-name-count";
+const MISS_COUNT: &str = "miss-name-count";
 const COUNT: &str = "active-name-count";
 const REPORT: &str = "namespace-report";
 const FLUSH: &str = "seen-flush";
@@ -276,6 +278,12 @@ impl SeenStore {
             format!("{SEEN_PREFIX}resmud:period:{PAST}"),
             SEEN_SET.to_string(),
         );
+        for key in ["resmud:miss", "resmud:rule:old%2F%7Bx%7D"] {
+            docs.insert(
+                format!("{SEEN_PREFIX}-stat:{key}:period:{PAST}"),
+                SEEN_SET.to_string(),
+            );
+        }
         SeenStore {
             id: "seen-source",
             docs: Mutex::new(docs),
@@ -676,6 +684,19 @@ fn suite() -> Suite {
                 .binding("prefix", "resmud")
                 .capability(Capability::scoped([admin_scope("resmud")])),
         )
+        .fixture(
+            Fixture::new(RULE_COUNT, Verb::Source)
+                .binding("prefix", "resmud")
+                .binding("rule", "old%2F%7Bx%7D")
+                .binding("period", PAST)
+                .capability(owner_of("resmud")),
+        )
+        .fixture(
+            Fixture::new(MISS_COUNT, Verb::Source)
+                .binding("prefix", "resmud")
+                .binding("period", PAST)
+                .capability(owner_of("resmud")),
+        )
         // The store a host binds. Its Sink is walked with what it already holds, so the
         // set the walk's count reads is the same before and after.
         .fixture(Fixture::new("seen-source", Verb::Source).binding("key", "resmud:period:2026-01"))
@@ -772,16 +793,16 @@ fn declared(suite: Suite) -> Suite {
 /// held to a weaker standard.
 fn assert_shape(report: &Report) {
     assert_eq!(
-        report.endpoints, 27,
-        "eighteen module endpoints, nine fixtures: {report}"
+        report.endpoints, 29,
+        "twenty module endpoints, nine fixtures: {report}"
     );
-    // registry, resolve, docs, style, document, doc, health, count, report, git-source,
+    // registry, resolve, docs, style, document, doc, health, active/rule/miss counts, report, git-source,
     // git-status: one Source each; claim, flush and git-refresh: one Sink each; admin: Sink +
     // Delete; the three stores: Source + Sink each; vocab, sparql, and the reader, shapes
     // and validator a repository reads through: one each.
     // resolution, resolution-iri and delegate, and the client delegation reads through:
     // one Source each.
-    assert_eq!(report.actions, 31, "{report}");
+    assert_eq!(report.actions, 33, "{report}");
     assert_eq!(
         report.checks.skipped().count(),
         0,
@@ -832,9 +853,9 @@ fn assert_only_unprobed(report: &Report, live: &[&str]) {
     assert_eq!(unprobed, live, "{report}");
 }
 
-/// With no clock neither count can say a month is over, so both are live.
+/// With no clock no count can say a month is over, so every count is live.
 fn assert_nothing_unprobed(report: &Report) {
-    assert_only_unprobed(report, &[COUNT, GIT_STATUS, REPORT]);
+    assert_only_unprobed(report, &[COUNT, GIT_STATUS, MISS_COUNT, REPORT, RULE_COUNT]);
 }
 
 /// Over a live registry BODIES rightly declines every Source but the pure
@@ -854,7 +875,15 @@ fn assert_unprobed_only_live_bodies(report: &Report) {
         .collect();
     unprobed.sort_unstable();
     let mut expected = READ_FACES.to_vec();
-    expected.extend(["registry-source", "vocab", COUNT, GIT_STATUS, REPORT]);
+    expected.extend([
+        "registry-source",
+        "vocab",
+        COUNT,
+        GIT_STATUS,
+        MISS_COUNT,
+        REPORT,
+        RULE_COUNT,
+    ]);
     expected.sort_unstable();
     assert_eq!(unprobed, expected, "{report}");
 }
@@ -1847,6 +1876,8 @@ fn conforms_on_a_clock() {
         .with_clock(Arc::new(ikigai_core::FixedClock::at(1_794_700_800_000)));
     let report = declared(stand_in_suite())
         .cacheable(COUNT)
+        .cacheable(RULE_COUNT)
+        .cacheable(MISS_COUNT)
         .live(REPORT)
         .body_space(Arc::clone(&w.root))
         .run_blocking(&kernel);
@@ -1929,8 +1960,8 @@ fn conforms_over_the_real_engine() {
     assert!(report.is_clean(), "{report}");
     assert_nothing_unprobed(&report);
     assert_eq!(
-        report.endpoints, 30,
-        "eighteen, eight fixtures, four forms: {report}"
+        report.endpoints, 32,
+        "twenty, eight fixtures, four forms: {report}"
     );
 
     // The page is real: every term the vocabulary defines, none it does not.
