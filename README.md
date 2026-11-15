@@ -900,19 +900,23 @@ task and limited to `seen/`, which no request can reach. `--git` adds another, l
 
 ## Known limitations
 
-- **A `redirect` namespace answers HTTP 500.** The module reports the target,
-  but the HTTP face has no mapping for "this is somewhere else", so it surfaces
-  as a server error rather than a `303`. That holds for a URN or a tag IRI at `/{iri}` too:
-  `ikigai-web` 0.2 lets an endpoint set `Location` only on a write's answer, and only to a
-  same-origin path, so a read cannot answer `303` to another host. Until that lands in `ikigai-web`, only
-  `hosted` and `mirror` namespaces are servable over HTTP. That includes
+- **A `redirect` namespace answers HTTP 500.** The module still reports the target
+  as an endpoint error rather than the typed redirect answer supported by core 0.3
+  and `ikigai-web` 0.5. That holds for a URN or a tag IRI at `/{iri}` too. Until the
+  module uses that answer, only `hosted` and `mirror` namespaces are servable over
+  HTTP. That includes
   [a namespace's status and rules](#redirects-statuses-and-rewrite-rules):
   `urn:name:resolve` reports them, and no HTTP response carries them yet.
 - **A retired namespace answers `404`, not `410`.** The distinction — *gone* as
   against *never here* — is exactly what a tombstone exists to express, and it
-  is lost at the HTTP boundary for the same reason.
+  is lost because the module still reports `NotFound` rather than core 0.3's `Gone`.
 
-## Unreleased migration
+## 0.7.0 migration
+
+Move all ikigai dependencies to core 0.3, including the standalone server on
+`ikigai-web` 0.5. Consumers sharing core types must move their other modules to
+core 0.3 as well. Namespace behavior is unchanged; the redirect and Gone HTTP
+faces will be wired separately.
 
 Rust callers: `Namespace` gains `public` (`true` for everything that exists today), `Strategy`
 gains `Delegate`, `Registry` gains `unclaimed`, `ClaimError` gains `BadUpstream`, `LoadError`

@@ -1108,7 +1108,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -1225,9 +1225,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-a11y"
-version = "0.4.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd503a4162bb7a46ab05189eed9cbf75fe7bf4d806846193c05620563af283cb"
+checksum = "85119f2185d7c2e49d9753fec8d460afd1f9c95fa6408a245cb952e0861b4b05"
 dependencies = [
  "ikigai-core",
  "serde",
@@ -1237,10 +1237,11 @@ dependencies = [
 
 [[package]]
 name = "ikigai-conformance"
-version = "0.12.0"
+version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5f248261ab772915c06afcb7801966fea8eb611a7d7e4a7a31374552d4f688a"
+checksum = "9a78dda2d7dad6a85f607400f81e80affcfcaa8f3f7bd9d3d303d67908b8d708"
 dependencies = [
+ "async-trait",
  "futures",
  "ikigai-core",
  "ikigai-vocab",
@@ -1250,9 +1251,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-core"
-version = "0.2.11"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8dd6466fc9cb46cda1c72b90316e39f1f54664094899df5e93a724becaf4eb5f"
+checksum = "d7c210be2e02eaf5363c7461291ddea938e3a631de4e8c9a38caf665d9549471"
 dependencies = [
  "async-trait",
  "blake3",
@@ -1262,26 +1263,14 @@ dependencies = [
  "futures-util",
  "oxiri",
  "serde",
-]
-
-[[package]]
-name = "ikigai-fn"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c5ac322b75473e7833ff1c529514bc6ff4a048deb5f53a06660609dba87d1d1"
-dependencies = [
- "async-trait",
- "futures-util",
- "ikigai-core",
- "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "ikigai-fn"
-version = "0.9.0"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8185d58be8829545986b8c64d49ff79c0b957614efda8c093585461c02fbe3ac"
+checksum = "e01a553e7f296ef6868a699cac28853d4c1bbd03955d987c1299df943cd67c5a"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1293,24 +1282,25 @@ dependencies = [
 
 [[package]]
 name = "ikigai-fs"
-version = "0.2.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d8139614bad071e6034e7a3e6025c10d92cb62b303f14fe0b0c3eb852813a8e"
+checksum = "d067b0f3b029d5e721766f650b4d27f55640a1f29ae441b78360ec064fab43c5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "futures-core",
  "getrandom 0.3.4",
  "ikigai-core",
+ "mime_guess",
  "rustix",
  "web-sys",
 ]
 
 [[package]]
 name = "ikigai-http"
-version = "0.4.3"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ca33d04af85cf027db214bfffe9f7d2333bda0361a87da476f1640b41b1b1d1"
+checksum = "110e67948bdc00f7e4927a2a7a7c5c4ac2316def917722c1707173fce003e1a7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1323,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "ikigai-name"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -1332,7 +1322,7 @@ dependencies = [
  "ikigai-a11y",
  "ikigai-conformance",
  "ikigai-core",
- "ikigai-fn 0.7.0",
+ "ikigai-fn",
  "ikigai-fs",
  "ikigai-http",
  "ikigai-repo",
@@ -1350,9 +1340,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-rdf"
-version = "0.3.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d36c8123e1c48ca9b95d6c597b686a4e31b802d8917e58e8a5e42cabe8a9f47"
+checksum = "99781a7b73a837490d209736df22e752bd2eb62e43ac0696573dceb4d16f2f20"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -1366,9 +1356,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-repo"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b83cfe6444f283b75d0f68cf19c4954a8a5d8efa7dd6cc0c5e0cf54aa2f9dca"
+checksum = "942da870ac5b06f3a4091cfd888f6e2eda4fcb529c7337687580d2c59630f732"
 dependencies = [
  "async-trait",
  "futures",
@@ -1377,9 +1367,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-secret"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0a9e25c9705da4f95cf9ff4217699cf8734bc9ad4dbca5efc5d9efbcb0af1c4"
+checksum = "626460ee2525b00ab5d66442bc526efec8555d22c00f7928550b18b1254b6c34"
 dependencies = [
  "age",
  "async-trait",
@@ -1393,9 +1383,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-shacl"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4be1566af7a1cd039a0b9ca7de564db6d95458759de8773061c67c60f4d87db6"
+checksum = "00fe0630bbe81187b35a169b2ff0cb648c91481bfdafc78c50c3d1853c45937d"
 dependencies = [
  "async-trait",
  "ikigai-core",
@@ -1410,9 +1400,9 @@ dependencies = [
 
 [[package]]
 name = "ikigai-sparql"
-version = "0.3.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc6f284b15f286f4b2b7a9c3007691b3347d66d073c330cd4a2ed45140575f2c"
+checksum = "e9557d221e14c963ce726e7625db3734b9b1bc49f8df96934027fb4a641ef63d"
 dependencies = [
  "async-trait",
  "ikigai-core",
@@ -1420,24 +1410,25 @@ dependencies = [
  "ikigai-vocab",
  "oxigraph",
  "oxiri",
+ "serde_json",
  "spargebra",
 ]
 
 [[package]]
 name = "ikigai-ui"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6851b3d4dc6317b5a8d51471e8297067b17dd92943bee572fb502d107ed2d7"
+checksum = "b394ecf4463036b68d2aabdd30ea6d811ffee59c3289edefec4ccbf3860de5df"
 dependencies = [
  "ikigai-core",
- "ikigai-fn 0.9.0",
+ "ikigai-fn",
 ]
 
 [[package]]
 name = "ikigai-vocab"
-version = "0.2.7"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c2ca4f6d03840ae8b73bc5ea0cb44dc91e3643b2a437ead2f0ec1a1d7998d13"
+checksum = "b227fd1f71981a3fa195ae9e966667d60e0aa53148096d66afb1af59f8c60a73"
 dependencies = [
  "ikigai-core",
  "serde_json",
@@ -1445,20 +1436,22 @@ dependencies = [
 
 [[package]]
 name = "ikigai-web"
-version = "0.2.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a493d93724a66a06e2bdd2aa364ecd5865f82a9821035b804014a92a238def0"
+checksum = "54994e3850fb9de4407f408f758a2d3aaa616c42c06fb367e6a37cb4bebfc873"
 dependencies = [
  "blake3",
  "bytes",
  "chrono",
+ "futures-core",
  "http",
  "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",
  "ikigai-core",
- "ikigai-fn 0.7.0",
+ "ikigai-fn",
+ "ikigai-http",
  "libc",
  "serde_json",
  "tokio",
@@ -1639,12 +1632,12 @@ dependencies = [
 
 [[package]]
 name = "md-5"
-version = "0.10.6"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
 dependencies = [
  "cfg-if",
- "digest 0.10.7",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -1836,7 +1829,7 @@ dependencies = [
  "oxiri",
  "oxsdatatypes",
  "rand 0.9.5",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 2.0.20",
 ]
 
@@ -2472,7 +2465,7 @@ dependencies = [
  "retry",
  "robius-android-env",
  "windows",
- "windows-core 0.56.0",
+ "windows-core",
 ]
 
 [[package]]
@@ -2752,13 +2745,13 @@ dependencies = [
 
 [[package]]
 name = "sha1"
-version = "0.10.7"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
 dependencies = [
  "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -2855,7 +2848,7 @@ dependencies = [
  "regex",
  "rustc-hash 2.1.3",
  "sha1",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "sparesults",
  "spargebra",
  "sparopt",
@@ -3538,7 +3531,7 @@ version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1de69df01bdf1ead2f4ac895dc77c9351aefff65b2f3db429a343f9cbf05e132"
 dependencies = [
- "windows-core 0.56.0",
+ "windows-core",
  "windows-targets 0.52.6",
 ]
 
@@ -3548,23 +3541,10 @@ version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4698e52ed2d08f8658ab0c39512a7c00ee5fe2688c65f8c0a4f06750d729f2a6"
 dependencies = [
- "windows-implement 0.56.0",
- "windows-interface 0.56.0",
- "windows-result 0.1.2",
+ "windows-implement",
+ "windows-interface",
+ "windows-result",
  "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement 0.60.2",
- "windows-interface 0.59.3",
- "windows-link",
- "windows-result 0.4.1",
- "windows-strings",
 ]
 
 [[package]]
@@ -3579,32 +3559,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-implement"
-version = "0.60.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "windows-interface"
 version = "0.56.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08990546bf4edef8f431fa6326e032865f27138718c587dc21bc0265bbcb57cc"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "windows-interface"
-version = "0.59.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3624,24 +3582,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e383302e8ec8515204254685643de10811af0ed97ea37210dc26fb0032647f8"
 dependencies = [
  "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-result"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
-dependencies = [
- "windows-link",
-]
-
-[[package]]
-name = "windows-strings"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
-dependencies = [
- "windows-link",
 ]
 
 [[package]]
