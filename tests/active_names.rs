@@ -309,8 +309,9 @@ fn a_redirected_name_counts() {
         w.resolve("acme/thing").unwrap(),
         "acme\tredirect\thttps://acme.example/ns\t302\n"
     );
-    let reported = w.doc("acme/other").expect_err("reported as an error");
-    assert!(reported.to_string().contains("redirects to"), "{reported}");
+    let answered = w.doc("acme/other").expect("a redirect is an answer");
+    let redirect = answered.as_redirect().expect("a typed redirect");
+    assert_eq!(redirect.location.as_str(), "https://acme.example/ns");
     assert_eq!(w.count("acme", "2026-11"), "2\n");
 }
 

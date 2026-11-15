@@ -260,10 +260,9 @@ pub(crate) fn resolution(
             )
         }
         // Retired is an ANSWER, not a miss: the namespace was real, and saying so is
-        // more useful than pretending it never existed. HTTP would call this 410 Gone;
-        // core has no such variant, so the face maps it and NotFound carries it.
+        // more useful than pretending it never existed: Gone, which HTTP answers 410.
         Strategy::Retired { reason } => {
-            return Err(Error::NotFound(format!(
+            return Err(Error::Gone(format!(
                 "name: {:?} is retired{}: {reason}",
                 namespace.prefix,
                 when(at)

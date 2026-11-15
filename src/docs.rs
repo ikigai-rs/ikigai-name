@@ -592,7 +592,7 @@ pub fn docs() -> AsyncFnEndpoint {
                     )))
                 }
                 Strategy::Retired { reason } => {
-                    return Err(Error::NotFound(format!(
+                    return Err(Error::Gone(format!(
                         "name: {prefix:?} is retired: {reason}"
                     )))
                 }

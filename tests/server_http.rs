@@ -36,7 +36,11 @@ const VOCAB: &str = "@prefix rm: <https://iriref.org/resmud/core#> .\n\
 const REGISTRY: &str = r#"{"namespaces":[
   {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
   {"prefix":"urn:urnid:acme:","owner":"urn:cap:name:admin:acme","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
-  {"prefix":"urn:urnid:hidden:","owner":"urn:cap:name:admin:hidden","strategy":"hosted","source":"urn:file:vocab/core.ttl","public":false}
+  {"prefix":"urn:urnid:hidden:","owner":"urn:cap:name:admin:hidden","strategy":"hosted","source":"urn:file:vocab/core.ttl","public":false},
+  {"prefix":"moved","owner":"urn:cap:name:admin:moved","strategy":"redirect","target":"https://moved.example/ns",
+   "rules":[{"match":"{x}","target":"https://new.example/{x}","status":301}]},
+  {"prefix":"seeother","owner":"urn:cap:name:admin:seeother","strategy":"redirect","target":"https://seeother.example/","status":303},
+  {"prefix":"gone","owner":"urn:cap:name:admin:gone","strategy":"retired","reason":"withdrawn in 2024"}
 ]}"#;
 
 /// A scratch root no other server in this process shares.
@@ -151,6 +155,7 @@ impl Drop for Server {
 struct Response {
     status: u16,
     content_type: String,
+    location: Option<String>,
     body: String,
 }
 
@@ -164,14 +169,19 @@ impl Response {
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|s| s.parse().ok())
             .expect("a status line");
-        let content_type = lines
-            .filter_map(|l| l.split_once(':'))
-            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
-            .map(|(_, v)| v.trim().to_ascii_lowercase())
-            .unwrap_or_default();
+        let headers: Vec<(&str, &str)> = lines.filter_map(|l| l.split_once(':')).collect();
+        let header = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                .map(|(_, v)| v.trim().to_string())
+        };
         Response {
             status,
-            content_type,
+            content_type: header("content-type")
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            location: header("location"),
             body: body.to_string(),
         }
     }
@@ -248,6 +258,42 @@ fn the_http_face_negotiates_over_the_declared_faces() {
 
     // An unclaimed namespace is not found, not an error.
     assert_eq!(server.get("/nobody", None).status, 404);
+}
+
+/// Ledger #3045: a `redirect` namespace answers with its status and a `Location`, off-site,
+/// carrying what its rule chose; a `retired` one is `410 Gone`, not the `404` of a name
+/// nobody claims. Before core's typed redirect and `Error::Gone`, `GET /moved` was a `500`
+/// with no `Location`, and a retired namespace answered `404`.
+#[test]
+fn a_redirect_answers_its_status_and_a_retired_namespace_is_gone() {
+    let server = Server::start();
+    for (target, status, location) in [
+        // No rule matches: the namespace's target and its default status.
+        ("/moved", 302, "https://moved.example/ns"),
+        // The rule's own target, its capture filled, and its own status.
+        ("/moved/thing", 301, "https://new.example/thing"),
+        // A namespace's chosen status.
+        ("/seeother/core", 303, "https://seeother.example/"),
+    ] {
+        for accept in [None, Some("text/html")] {
+            let got = server.get(target, accept);
+            assert_eq!(got.status, status, "{target} {accept:?}: {}", got.body);
+            assert_eq!(
+                got.location.as_deref(),
+                Some(location),
+                "{target} {accept:?}"
+            );
+        }
+    }
+
+    let gone = server.get("/gone/core", None);
+    assert_eq!(gone.status, 410, "{}", gone.body);
+    assert!(gone.body.contains("withdrawn in 2024"), "{}", gone.body);
+    assert_eq!(gone.location, None);
+    let page = server.get("/gone/core", Some("text/html"));
+    assert_eq!(page.status, 410, "{}", page.body);
+    // An unclaimed name stays a 404: retired is "was here", not "never was".
+    assert_eq!(server.get("/nobody/core", None).status, 404);
 }
 
 /// `/{iri}` resolves a URN or a tag IRI on the tenant, in either form, and

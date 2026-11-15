@@ -313,7 +313,7 @@ fn a_namespace_retired_later_still_answers_for_the_date_it_stood() {
 
     let err = get(&kernel, "urn:name:document", &[("path", "resmud/core")]).unwrap_err();
     assert!(
-        matches!(&err, Error::NotFound(m) if m.contains("retired")),
+        matches!(&err, Error::Gone(m) if m.contains("retired")),
         "{err:?}"
     );
 
@@ -324,7 +324,7 @@ fn a_namespace_retired_later_still_answers_for_the_date_it_stood() {
 
     let err = document(&kernel, "resmud/core", "2026-06-01").unwrap_err();
     assert!(
-        matches!(&err, Error::NotFound(m)
+        matches!(&err, Error::Gone(m)
             if m.contains("retired as of 2026-06-01T23:59:59Z") && m.contains("realm charter")),
         "{err:?}"
     );

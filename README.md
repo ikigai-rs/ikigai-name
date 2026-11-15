@@ -305,8 +305,9 @@ ikigai -c 'source urn:name:resolve path=catalog/anything-else'
 # catalog	redirect	https://new.example/catalog	302
 ```
 
-**This is the registry and resolution only.** The HTTP face does not answer with
-these statuses yet: see [Known limitations](#known-limitations).
+`urn:name:document` answers the same target and status as core's typed redirect, so
+the standalone server answers `GET /catalog/anything-else` with `302 Found` and
+`Location: https://new.example/catalog`, whatever `Accept` asks for.
 
 ### Which status
 
@@ -498,8 +499,8 @@ a host.
 `/{iri}` resolves on the tenant the `Host` names: `/urn:urnid:acme:Weapon` and
 `/tag:urnid.org,2026:acme:Weapon` serve a hosted or mirrored namespace's document, negotiated
 like any path. `/-/resolution/iri/{iri}` answers the resolution as data, which is what a delegating
-resolver reads. A `redirect` still answers `500` rather than `303` (see
-[Known limitations](#known-limitations)).
+resolver reads. A `redirect` answers its status with a `Location`, and a retired
+namespace answers `410 Gone` with its reason, where a name nobody claims answers `404`.
 
 ## As of a date
 
@@ -789,7 +790,7 @@ new.
 | `urn:name:document` | Source | the namespace document, negotiated (`as=`) |
 | `urn:name:docs` | Source | the namespace as HTML; with `term=`, one htmx fragment, or with `view=page` the page showing that term |
 | `urn:name:style` | Source | the documentation page's stylesheet for `theme=` |
-| `urn:name:resolve` | Source | how a path or an IRI resolves (for a redirect, its target, status and any rule that answered), or a `NotFound` naming it |
+| `urn:name:resolve` | Source | how a path or an IRI resolves (for a redirect, its target, status and any rule that answered), or a `NotFound` naming it (`Gone` for a retired namespace) |
 | `urn:name:resolution:iri:{iri}` | Source | the same resolution as data: JSON, Turtle, or that line |
 | `urn:name:resolution` | Source | the same, for `iri=` |
 | `urn:name:delegate` | Source | forward a name to an upstream resolver; needs `urn:cap:net:<host>` |
@@ -900,23 +901,24 @@ task and limited to `seen/`, which no request can reach. `--git` adds another, l
 
 ## Known limitations
 
-- **A `redirect` namespace answers HTTP 500.** The module still reports the target
-  as an endpoint error rather than the typed redirect answer supported by core 0.3
-  and `ikigai-web` 0.5. That holds for a URN or a tag IRI at `/{iri}` too. Until the
-  module uses that answer, only `hosted` and `mirror` namespaces are servable over
-  HTTP. That includes
-  [a namespace's status and rules](#redirects-statuses-and-rewrite-rules):
-  `urn:name:resolve` reports them, and no HTTP response carries them yet.
-- **A retired namespace answers `404`, not `410`.** The distinction — *gone* as
-  against *never here* — is exactly what a tombstone exists to express, and it
-  is lost because the module still reports `NotFound` rather than core 0.3's `Gone`.
+- **The standalone server routes at most two path segments.** `/{ns}` and
+  `/{ns}/{doc}` are its document routes, so `GET /catalog/item/2019/42` is `404`
+  there, and a rule that matches more than one segment below a one-segment prefix
+  is reachable through `urn:name:document` and `urn:name:resolve` but not over HTTP.
 
 ## 0.7.0 migration
 
 Move all ikigai dependencies to core 0.3, including the standalone server on
 `ikigai-web` 0.5. Consumers sharing core types must move their other modules to
-core 0.3 as well. Namespace behavior is unchanged; the redirect and Gone HTTP
-faces will be wired separately.
+core 0.3 as well.
+
+A `redirect` namespace's document is now an answer, not an error: `urn:name:document`
+returns core's typed redirect (`Representation::redirect`, read with `as_redirect`), which
+`ikigai-web` sends as the namespace's status with `Location`. It used to fail with an
+endpoint error, a `500` over HTTP. A retired namespace now fails with `Error::Gone`, which
+is `410` over HTTP, from `urn:name:document`, `urn:name:resolve` and `urn:name:docs`, where
+it used to be `Error::NotFound` and `404`. A caller matching `NotFound` to recognize a
+retirement should match `Gone`.
 
 Rust callers: `Namespace` gains `public` (`true` for everything that exists today), `Strategy`
 gains `Delegate`, `Registry` gains `unclaimed`, `ClaimError` gains `BadUpstream`, `LoadError`

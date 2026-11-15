@@ -1722,12 +1722,6 @@ fn errors_carry_no_registry_body() {
         (
             Verb::Source,
             DOCUMENT_IRI,
-            vec![("path", "acme/thing")],
-            root.clone(),
-        ),
-        (
-            Verb::Source,
-            DOCUMENT_IRI,
             vec![("path", "resmud/core"), ("as", "image/png")],
             root.clone(),
         ),
