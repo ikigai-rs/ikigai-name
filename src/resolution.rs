@@ -541,8 +541,10 @@ pub(crate) async fn resolve_in(
                 name,
                 at.as_ref(),
                 registry.limits.max_document_bytes,
+                seen,
             )
             .await?;
+            stat::note_redirect(seen, inv, at.as_ref(), namespace, name);
             let found = resolution(namespace, name, tenant_of(inv.capability), at.as_ref())?;
             // The kernel clamps to the registry's expiry, and in terms mode
             // also tracks the vocabulary read by the membership check above.

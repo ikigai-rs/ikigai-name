@@ -36,6 +36,8 @@
 //! | `urn:name:delegate` | Source | forward a name to an upstream resolver |
 //! | `urn:name:health` | Source | what this deployment holds, and what it refuses |
 //! | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
+//! | `urn:name:stat:rule:namespace:{prefix}:match:{rule}:period:{yyyy-mm}` | Source | distinct names answered by the rule whose match is percent-encoded as `{rule}` |
+//! | `urn:name:stat:miss:namespace:{prefix}:period:{yyyy-mm}` | Source | distinct names using a redirect fallback or rejected by hosted membership |
 //! | `urn:name:stat:namespace:{prefix}` | Source | that count for every month held |
 //! | `urn:name:seen-flush` | Sink | store the names buffered since the last flush |
 //! | `urn:name:git:{prefix}` | Source | the last good copy of a repository's file |
@@ -296,6 +298,14 @@ pub fn space() -> ikigai_core::EndpointSpace {
         .bind(Exact::new("urn:name:health"), health())
         // The count first: the report's trailing `{prefix}` would capture it too.
         .bind(template(stat::COUNT_TEMPLATE), stat::count(seen.clone()))
+        .bind(
+            template(stat::MISS_TEMPLATE),
+            stat::partition_count(seen.clone(), stat::CountKind::Miss),
+        )
+        .bind(
+            template(stat::RULE_TEMPLATE),
+            stat::partition_count(seen.clone(), stat::CountKind::Rule),
+        )
         .bind(template(stat::REPORT_TEMPLATE), stat::report(seen.clone()))
         .bind(Exact::new(FLUSH_IRI), stat::flush(seen))
         .bind(template(git::SOURCE_TEMPLATE), git::source())

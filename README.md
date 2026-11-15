@@ -695,6 +695,8 @@ number of names.
 | IRI | answer | |
 |---|---|---|
 | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | `3`, or with `as=text/turtle` an observation | a past month is cacheable under its stored set; the current month is live |
+| `urn:name:stat:rule:namespace:{prefix}:match:{rule}:period:{yyyy-mm}` | distinct names answered by that redirect rule; number or Turtle observation | the first matching rule counts, keyed by its percent-encoded match |
+| `urn:name:stat:miss:namespace:{prefix}:period:{yyyy-mm}` | distinct names using a redirect fallback or rejected by hosted membership; number or Turtle observation | the same monthly cache behavior |
 | `urn:name:stat:namespace:{prefix}` | one line per month held: `2026-11`, a tab, the count | always live |
 
 ```sh
@@ -703,7 +705,7 @@ ikigai -c 'source urn:name:stat:namespace:resmud:period:2026-11'
 ```
 
 Reading a count takes the namespace's `owner` or the operator's root capability.
-Both faces declare the wildcard form, like administration, and check the exact grant
+All count faces declare the wildcard form, like administration, and check the exact grant
 before reading the registry, so a refusal does not say whether a namespace exists.
 
 **Aggregate only.** What is stored is the name and the month, and nothing about the
@@ -713,13 +715,30 @@ request: no address, no user agent, no cookie, no per-visitor identifier.
 { "period": "2026-11", "names": ["resmud/core", "resmud/core/weapon"] }
 ```
 
-**What counts.** A name `urn:name:resolve` or `urn:name:document` (or its template
+**What counts as active.** A name `urn:name:resolve` or `urn:name:document` (or its template
 `urn:name:doc:{path}`) answered for, including one answered with a redirect, however
 its path was spelled: `resmud/core` and `/resmud//core` are one name. Not counted: an
 unclaimed or retired name, anything refused (over the ceiling, no conversion), an
 `as-of` answer, which is about the past rather than this month's traffic, and
 `urn:name:docs` called directly, which takes a namespace rather than a name. Months
 are in UTC.
+
+**Rules and misses.** A rule counts a distinct name only when it is the first rule
+that matches. Its key is its `match` text, rather than its position or target, so an
+edit to a target keeps the same partition. Percent-encode the match in the IRI:
+`old/{x}` is `old%2F%7Bx%7D`. For example:
+
+```sh
+ikigai -c 'source urn:name:stat:rule:namespace:acme:match:old%2F%7Bx%7D:period:2026-11'
+ikigai -c 'source urn:name:stat:miss:namespace:acme:period:2026-11'
+```
+
+A redirect that uses the namespace's fallback target matches no rule, so it counts
+as both active and a miss, even if the namespace has no rules. A hosted name rejected
+by `exact` or `terms` membership counts only as a miss. Unknown or invisible
+namespaces, retired names, delegation and document-loading errors create neither
+rule counts nor misses. Repeated names and alternate canonical spellings count once
+in each partition, tenant and UTC month. Historical reads count nothing.
 
 **It cannot slow or fail a resolution**, because resolving only adds the name to a
 buffer in memory. A request could not write the store anyway, as it holds no write
@@ -731,7 +750,7 @@ the current month includes them.
 | bound | |
 |---|---|
 | what a crash can lose | the names first seen since the last successful flush, at most 16,384. The standalone server flushes every 60 seconds by default |
-| names buffered | 16,384. Past it a new name is dropped, and the next flush reports how many |
+| name memberships buffered | 16,384 shared across active, rule and miss partitions. Past it a new name is dropped, and the next flush reports how many |
 | one name | 1,024 bytes; a longer one is answered and dropped the same way |
 | one stored set | 1,000,000 names; a count at that ceiling is a floor |
 
@@ -768,8 +787,8 @@ same canonical comparison as other resolution. Prefixes and explicit documents
 use the usual path or IRI comparison too.
 
 A name outside the selected set returns 404 from both the document and resolution
-faces and is never counted. An invalid `names` value refuses the whole registry,
-naming the namespace. `terms` reads the current served document (or its historical
+faces and is counted only in the miss partition. An invalid `names` value refuses
+the whole registry, naming the namespace. `terms` reads the current served document (or its historical
 version with `as-of`), under the document size and Turtle nesting limits. It needs
 no SPARQL binding. The claim and admin endpoints also accept `names=` and
 `documents=` (the latter as a JSON list).
@@ -792,6 +811,16 @@ being replaced, with no `if-match` meaning none may exist yet, and compares and
 replaces as one operation or refuses with `Conflict`. With nothing bound, a count is
 refused rather than answered as zero.
 
+Rule and miss sets use the same store. Their keys are
+`-stat:{encoded-prefix}:rule:{encoded-match}:period:{yyyy-mm}` or
+`-stat:{encoded-prefix}:miss:period:{yyyy-mm}`; omit the `:period:` suffix and month
+for the period index. The reserved `-` keeps these separate from namespace keys.
+Encode every byte except ASCII letters, digits and `-._~` as `%HH` in the prefix
+and match. Each set still holds only `period` and `names`; each index holds only
+`periods`. All partitions use the same name-length, stored-set and shared buffer
+ceilings. The flush's stored and dropped numbers count memberships across partitions,
+so one name can contribute to more than one.
+
 `space()` holds the buffer, so the counted faces are the ones it binds, `doc` at
 `urn:name:doc:{path}` now among them. `resolve()`, `document()` and `doc()` bound on
 their own count nothing.
@@ -799,7 +828,8 @@ their own count nothing.
 ### In the standalone server
 
 `--count-names` turns it on, with the sets in `seen/` under `--root`, or under each
-tenant's directory, so that splitting a tenant off copies its counts. A background task
+tenant's directory, so that splitting a tenant off copies its counts. Rule and miss
+sets are under `seen/partitions/`, using the same file-name escaping. A background task
 holds the only write scope in the process, on that directory alone, and no request
 holds it. Without the flag the server has no clock, makes no directory, and is exactly
 the read-only server it was.
@@ -831,6 +861,8 @@ new.
 | `urn:name:registry` | Source | every claimed namespace, as JSON |
 | `urn:name:health` | Source | what this deployment holds, and what it refuses |
 | `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` | Source | how many distinct names a namespace resolved in a month |
+| `urn:name:stat:rule:namespace:{prefix}:match:{rule}:period:{yyyy-mm}` | Source | distinct names answered by a rule, keyed by its percent-encoded match |
+| `urn:name:stat:miss:namespace:{prefix}:period:{yyyy-mm}` | Source | distinct names using a redirect fallback or rejected by hosted membership |
 | `urn:name:stat:namespace:{prefix}` | Source | that count for every month held |
 | `urn:name:seen-flush` | Sink | store the names resolved since the last flush |
 | `urn:name:git:{prefix}` | Source | the last good copy of a repository's file |

@@ -1,4 +1,4 @@
-//! Active names: how many distinct names a namespace resolved in a month.
+//! Distinct active names, names answered by each redirect rule, and misses per month.
 //!
 //! A namespace's volume is the names it actually answers for, not its registry
 //! entries, since one entry can answer for any number of names. This is resolver
@@ -50,6 +50,20 @@
 //! `{"period":"2026-11","names":["resmud/core"]}`, and the periods a namespace holds
 //! at `urn:name:seen-source:namespace:{prefix}` as `{"periods":["2026-11"]}`.
 //!
+//! Rule and miss sets use the same store with keys
+//! `-stat:{encoded-prefix}:rule:{encoded-match}:period:{yyyy-mm}` and
+//! `-stat:{encoded-prefix}:miss:period:{yyyy-mm}`. A namespace cannot begin
+//! with `-`, so these keys cannot alias an active-name set or period index.
+//! Encode every byte except ASCII letters, digits, `-._~` as `%HH`, including
+//! `/`, `:`, `%` and rule braces.
+//! Omit `:period:{yyyy-mm}` for their period indexes. These separate resources
+//! keep a namespace or match containing delimiters from aliasing another set.
+//!
+//! A redirect fallback is a miss even though it still answers successfully. A
+//! rejected hosted membership is also a miss; unclaimed, invisible, retired,
+//! delegated and failed document reads do not create a miss. Historical reads
+//! count nothing. Every partition shares the buffer ceiling and flush job.
+//!
 //! Source answers the document, or [`Error::NotFound`] if there is none yet. Sink takes
 //! `content`, and `if-match`, the content ID of the Source representation being
 //! replaced; with no `if-match` the document must not exist yet. It compares and
@@ -71,13 +85,17 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// The template a host binds the store at; see the [module documentation](self).
 pub const SEEN_TEMPLATE: &str = "urn:name:seen-source:namespace:{key}";
 
+pub(crate) const MISS_TEMPLATE: &str = "urn:name:stat:miss:namespace:{prefix}:period:{period}";
+pub(crate) const RULE_TEMPLATE: &str =
+    "urn:name:stat:rule:namespace:{prefix}:match:{rule}:period:{period}";
+
 /// The Sink that moves buffered names to the store, under the caller's capability.
 pub const FLUSH_IRI: &str = "urn:name:seen-flush";
 
 /// The capability [`FLUSH_IRI`] requires. A host's flush job holds it; no request does.
 pub const CAP_FLUSH: &str = "urn:cap:name:seen-flush";
 
-/// The most names held in memory between flushes, across every tenant and namespace.
+/// The most name memberships buffered across every tenant, namespace and partition.
 pub const MAX_BUFFERED_NAMES: usize = 16_384;
 
 /// The longest name counted, in bytes.
@@ -114,12 +132,27 @@ struct HeldPeriods {
     periods: BTreeSet<String>,
 }
 
-/// One set's identity: its tenant, if any, its namespace and its period.
+/// One set's identity: tenant, namespace, period and aggregate partition.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct SetKey {
     tenant: Option<String>,
     prefix: String,
     period: String,
+    partition: Partition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Partition {
+    Active,
+    Rule(String),
+    Miss,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CountKind {
+    Active,
+    Rule,
+    Miss,
 }
 
 #[derive(Default)]
@@ -145,6 +178,16 @@ impl Seen {
     /// Record that `path` resolved under `prefix`, answering when its period ends, or
     /// `None` on a kernel with no clock, which counts nothing.
     pub(crate) fn note(&self, inv: &Invocation<'_>, prefix: &str, path: &str) -> Option<Time> {
+        self.note_partition(inv, prefix, path, Partition::Active)
+    }
+
+    fn note_partition(
+        &self,
+        inv: &Invocation<'_>,
+        prefix: &str,
+        path: &str,
+        partition: Partition,
+    ) -> Option<Time> {
         let period = period_of(inv.now()?)?;
         let end = period_end(&period)?;
         // `resmud/core`, `/resmud/core` and `resmud//core` are one name, to the
@@ -154,6 +197,7 @@ impl Seen {
             tenant: tenant_of(inv.capability).map(str::to_string),
             prefix: prefix.to_string(),
             period,
+            partition,
         };
         let mut buffer = self.lock();
         let known = buffer.sets.get(&key).is_some_and(|set| set.contains(&name));
@@ -178,7 +222,11 @@ impl Seen {
         self.lock()
             .sets
             .keys()
-            .filter(|key| key.tenant.as_deref() == tenant && key.prefix == prefix)
+            .filter(|key| {
+                key.tenant.as_deref() == tenant
+                    && key.prefix == prefix
+                    && key.partition == Partition::Active
+            })
             .map(|key| key.period.clone())
             .collect()
     }
@@ -253,6 +301,100 @@ pub(crate) fn counted(
             answer.with_expiry(expiry)
         }
         None => answer,
+    }
+}
+
+/// Record only a redirect's first matching rule, or its fallback as a miss.
+pub(crate) fn note_redirect(
+    seen: Option<&Seen>,
+    inv: &Invocation<'_>,
+    at: Option<&AsOf>,
+    namespace: &crate::registry::Namespace,
+    path: &str,
+) {
+    if at.is_none() {
+        if let (Some(seen), Some(redirect)) = (seen, namespace.redirection(path)) {
+            let partition = redirect
+                .rule
+                .map(|rule| Partition::Rule(rule.to_string()))
+                .unwrap_or(Partition::Miss);
+            seen.note_partition(inv, &namespace.prefix, path, partition);
+        }
+    }
+}
+
+pub(crate) fn note_miss(
+    seen: Option<&Seen>,
+    inv: &Invocation<'_>,
+    at: Option<&AsOf>,
+    prefix: &str,
+    path: &str,
+) {
+    if at.is_none() {
+        if let Some(seen) = seen {
+            seen.note_partition(inv, prefix, path, Partition::Miss);
+        }
+    }
+}
+
+// Encode every non-unreserved byte, including partition delimiters and rule braces.
+fn encode_key(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~".contains(&byte) {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn decode_key(value: &str) -> Result<String> {
+    let mut bytes = Vec::new();
+    let mut input = value.as_bytes().iter().copied();
+    while let Some(byte) = input.next() {
+        if byte == b'%' {
+            let pair: String = input.by_ref().take(2).map(char::from).collect();
+            let decoded = (pair.len() == 2 && pair.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                .then(|| u8::from_str_radix(&pair, 16).ok())
+                .flatten();
+            bytes.push(decoded.ok_or_else(|| Error::InvalidArgument {
+                name: "rule".into(),
+                detail: "write the rule match with percent-encoding".into(),
+            })?);
+        } else {
+            bytes.push(byte);
+        }
+    }
+    String::from_utf8(bytes).map_err(|_| Error::InvalidArgument {
+        name: "rule".into(),
+        detail: "the rule match must be UTF-8".into(),
+    })
+}
+
+fn partition_periods_iri(prefix: &str, partition: &Partition) -> String {
+    match partition {
+        Partition::Active => periods_iri(prefix),
+        Partition::Miss => format!(
+            "urn:name:seen-source:namespace:-stat:{}:miss",
+            encode_key(prefix)
+        ),
+        Partition::Rule(rule) => format!(
+            "urn:name:seen-source:namespace:-stat:{}:rule:{}",
+            encode_key(prefix),
+            encode_key(rule)
+        ),
+    }
+}
+
+fn partition_set_iri(prefix: &str, period: &str, partition: &Partition) -> String {
+    match partition {
+        Partition::Active => set_iri(prefix, period),
+        _ => format!(
+            "{}:period:{period}",
+            partition_periods_iri(prefix, partition)
+        ),
     }
 }
 
@@ -353,7 +495,7 @@ async fn store_names(
     key: &SetKey,
     names: &BTreeSet<String>,
 ) -> Result<(usize, usize)> {
-    let target = set_iri(&key.prefix, &key.period);
+    let target = partition_set_iri(&key.prefix, &key.period, &key.partition);
     let stored = read_stored::<SeenSet>(inv, &target).await?;
     let (mut set, token) = match stored {
         Some((set, token)) => (set, Some(token)),
@@ -381,7 +523,7 @@ async fn store_names(
         return Ok((0, refused));
     }
 
-    let list = periods_iri(&key.prefix);
+    let list = partition_periods_iri(&key.prefix, &key.partition);
     let listed = read_stored::<HeldPeriods>(inv, &list).await?;
     let (mut held, held_token) = match listed {
         Some((held, token)) => (held, Some(token)),
@@ -424,11 +566,23 @@ async fn active_names(
     prefix: &str,
     period: &str,
 ) -> Result<(usize, bool)> {
-    let stored = read_stored::<SeenSet>(inv, &set_iri(prefix, period)).await?;
+    active_partition(inv, seen, prefix, period, Partition::Active).await
+}
+
+async fn active_partition(
+    inv: &Invocation<'_>,
+    seen: &Seen,
+    prefix: &str,
+    period: &str,
+    partition: Partition,
+) -> Result<(usize, bool)> {
+    let stored =
+        read_stored::<SeenSet>(inv, &partition_set_iri(prefix, period, &partition)).await?;
     let key = SetKey {
         tenant: tenant_of(inv.capability).map(str::to_string),
         prefix: prefix.to_string(),
         period: period.to_string(),
+        partition,
     };
     let pending = seen.pending(&key);
     let past = inv
@@ -451,7 +605,13 @@ pub(crate) fn text_answer(body: String) -> Representation {
 /// The count as an observation. Its subject is the IRI that answered it, so there is no
 /// blank node. `ikigai-vocab` has no term for a count of names over a period, so these
 /// are schema.org's and Dublin Core's.
-fn observation(iri: &str, prefix: &str, period: &str, count: usize) -> Result<Representation> {
+fn observation(
+    iri: &str,
+    prefix: &str,
+    period: &str,
+    count: usize,
+    variable: &str,
+) -> Result<Representation> {
     let namespace =
         serde_json::to_string(prefix).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
     let body = format!(
@@ -460,7 +620,7 @@ fn observation(iri: &str, prefix: &str, period: &str, count: usize) -> Result<Re
          @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .\n\n\
          <{iri}> a schema:Observation ;\n    \
              schema:observationAbout {namespace} ;\n    \
-             schema:variableMeasured \"active names\" ;\n    \
+             schema:variableMeasured \"{variable}\" ;\n    \
              dcterms:temporal \"{period}\"^^xsd:gYearMonth ;\n    \
              schema:value {count} .\n"
     );
@@ -479,7 +639,55 @@ fn prefix_input() -> ArgSpec {
 
 /// `urn:name:stat:namespace:{prefix}:period:{yyyy-mm}` — the size of one month's set.
 pub(crate) fn count(seen: Arc<Seen>) -> AsyncFnEndpoint {
-    AsyncFnEndpoint::new("active-name-count", move |inv: &Invocation<'_>| {
+    partition_count(seen, CountKind::Active)
+}
+
+pub(crate) fn partition_count(seen: Arc<Seen>, kind: CountKind) -> AsyncFnEndpoint {
+    let (id, title, summary) = match kind {
+        CountKind::Rule => (
+            "rule-name-count",
+            "Names answered by a rule, for one month",
+            "How many distinct names the first matching redirect rule answered in the month, in UTC.",
+        ),
+        CountKind::Miss => (
+            "miss-name-count",
+            "Unmatched names in a namespace, for one month",
+            "How many distinct names used a redirect fallback or failed hosted membership in the month, in UTC.",
+        ),
+        CountKind::Active => (
+            "active-name-count",
+            "Active names in a namespace, for one month",
+            "How many distinct names this namespace resolved in the month, in UTC.",
+        ),
+    };
+    let mut action = ActionSpec::new(Verb::Source)
+        .summary(summary)
+        .requires(CAP_ADMIN_ANY)
+        .input(prefix_input())
+        .input(
+            ArgSpec::new("period")
+                .summary("the month, as yyyy-mm")
+                .binding()
+                .class(XSD_STRING),
+        )
+        .input(
+            ArgSpec::new("as")
+                .summary("text/plain for the number, text/turtle for an observation")
+                .default_value(TEXT_PLAIN)
+                .optional()
+                .class(XSD_STRING),
+        )
+        .output(TEXT_PLAIN_UTF8)
+        .output(TEXT_TURTLE);
+    if matches!(kind, CountKind::Rule) {
+        action = action.input(
+            ArgSpec::new("rule")
+                .summary("the percent-encoded match of the rule")
+                .binding()
+                .class(XSD_STRING),
+        );
+    }
+    AsyncFnEndpoint::new(id, move |inv: &Invocation<'_>| {
         let seen = seen.clone();
         Box::pin(async move {
             let period = bound(inv, "period")?;
@@ -501,9 +709,24 @@ pub(crate) fn count(seen: Arc<Seen>) -> AsyncFnEndpoint {
                 });
             }
             let prefix = authorized_prefix(inv).await?;
-            let (count, settled) = active_names(inv, &seen, prefix, period).await?;
+            let partition = match kind {
+                CountKind::Rule => Partition::Rule(decode_key(bound(inv, "rule")?)?),
+                CountKind::Miss => Partition::Miss,
+                CountKind::Active => Partition::Active,
+            };
+            let (count, settled) = active_partition(inv, &seen, prefix, period, partition).await?;
             let answer = if wanted == TEXT_TURTLE {
-                observation(inv.request.target.as_str(), prefix, period, count)?
+                observation(
+                    inv.request.target.as_str(),
+                    prefix,
+                    period,
+                    count,
+                    match kind {
+                        CountKind::Rule => "names answered by rule",
+                        CountKind::Miss => "unmatched names",
+                        CountKind::Active => "active names",
+                    },
+                )?
             } else {
                 text_answer(format!("{count}\n"))
             };
@@ -511,33 +734,10 @@ pub(crate) fn count(seen: Arc<Seen>) -> AsyncFnEndpoint {
         }) as InvokeFuture<'_>
     })
     .with_description(
-        Description::new("active-name-count")
-            .title("Active names in a namespace, for one month")
-            .summary(
-                "How many distinct names this namespace resolved in the month, in UTC. A past \
-                 month is cacheable under its stored set; the current one is live.",
-            )
-            .action(
-                ActionSpec::new(Verb::Source)
-                    .summary("count the names a namespace resolved in a month")
-                    .requires(CAP_ADMIN_ANY)
-                    .input(prefix_input())
-                    .input(
-                        ArgSpec::new("period")
-                            .summary("the month, as yyyy-mm")
-                            .binding()
-                            .class(XSD_STRING),
-                    )
-                    .input(
-                        ArgSpec::new("as")
-                            .summary("text/plain for the number, text/turtle for an observation")
-                            .default_value(TEXT_PLAIN)
-                            .optional()
-                            .class(XSD_STRING),
-                    )
-                    .output(TEXT_PLAIN_UTF8)
-                    .output(TEXT_TURTLE),
-            ),
+        Description::new(id)
+            .title(title)
+            .summary(summary)
+            .action(action),
     )
 }
 
@@ -635,6 +835,25 @@ pub(crate) fn flush(seen: Arc<Seen>) -> AsyncFnEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn partition_keys_encode_delimiters_and_literal_percent_escapes() {
+        for value in ["old/{x}", "urn:urnid:acme:", "café/%2F:period:2026-11", ""] {
+            let encoded = encode_key(value);
+            assert_eq!(decode_key(&encoded).unwrap(), value);
+            assert!(!encoded.contains([':', '/', '{', '}']));
+        }
+        for invalid in ["%", "%1", "%GG", "%+A", "%FF"] {
+            assert!(decode_key(invalid).is_err(), "{invalid}");
+        }
+        let rule = Partition::Rule("x:miss".into());
+        assert_ne!(
+            partition_set_iri("x", "2026-11", &rule),
+            partition_set_iri("x:rule:x", "2026-11", &Partition::Miss)
+        );
+        assert!(partition_set_iri("x", "2026-11", &rule)
+            .starts_with("urn:name:seen-source:namespace:-stat:"));
+    }
 
     #[test]
     fn a_period_is_the_month_an_instant_falls_in_in_utc() {

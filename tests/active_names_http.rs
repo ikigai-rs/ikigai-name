@@ -15,6 +15,8 @@ const VOCAB: &str = "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
 const REGISTRY: &str = r#"{"namespaces":[
   {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
   {"prefix":"acme/vocab","owner":"urn:cap:name:admin:acme","strategy":"hosted","source":"urn:file:vocab/core.ttl"},
+  {"prefix":"links","owner":"urn:cap:name:admin:links","strategy":"redirect","target":"https://fallback.example/","rules":[{"match":"old","target":"https://new.example/"}]},
+  {"prefix":"exact","owner":"urn:cap:name:admin:exact","strategy":"hosted","source":"urn:file:vocab/core.ttl","names":"exact","documents":[]},
   {"prefix":"gone","owner":"urn:cap:name:admin:gone","strategy":"retired","reason":"ended"}
 ]}"#;
 
@@ -249,6 +251,8 @@ fn the_counts_are_not_on_the_public_surface() {
     for target in [
         "/urn:name:stat:namespace:resmud",
         "/urn:name:stat:namespace:resmud:period:2026-11",
+        "/urn:name:stat:miss:namespace:resmud:period:2026-11",
+        "/urn:name:stat:rule:namespace:links:match:old%2F%7Bx%7D:period:2026-11",
         "/urn:name:seen-flush",
         "/seen/resmud.periods.json",
         "/-/stat",
@@ -310,4 +314,52 @@ fn the_flush_interval_needs_counting_and_a_real_number() {
         assert!(said.contains("--flush-every"), "{args:?}: {said}");
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn rule_and_miss_partitions_are_flushed_by_the_server() {
+    let root = scratch_root();
+    fill(&root);
+    let server = Server::counting(root.clone());
+    for _ in 0..2 {
+        assert_eq!(server.get("/links/old", None), 302);
+        assert_eq!(server.get("/links/unmatched", None), 302);
+        assert_eq!(server.get("/exact/missing", None), 404);
+    }
+    let partitions = root.join("seen/partitions");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let held = loop {
+        let sets: Vec<serde_json::Value> = std::fs::read_dir(&partitions)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".periods.json")
+            })
+            .filter_map(|entry| std::fs::read(entry.path()).ok())
+            .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
+            .collect();
+        if sets.len() == 3 {
+            break sets;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "partition sets were not flushed: {}",
+            server.log()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut names = Vec::new();
+    for set in held {
+        assert_eq!(set.as_object().unwrap().len(), 2);
+        assert!(set["period"].as_str().is_some());
+        let members = set["names"].as_array().unwrap();
+        assert_eq!(members.len(), 1);
+        names.push(members[0].as_str().unwrap().to_string());
+    }
+    names.sort();
+    assert_eq!(names, ["exact/missing", "links/old", "links/unmatched"]);
 }

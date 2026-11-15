@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 const REGISTRY: &str = r#"{"namespaces":[
   {"prefix":"resmud","owner":"urn:cap:name:admin:resmud","strategy":"hosted","source":"urn:test:vocab"},
   {"prefix":"lore","owner":"urn:cap:name:admin:lore","strategy":"hosted","source":"urn:test:vocab"},
-  {"prefix":"acme","owner":"urn:cap:name:admin:acme","strategy":"redirect","target":"https://acme.example/ns"},
+  {"prefix":"acme","owner":"urn:cap:name:admin:acme","strategy":"redirect","target":"https://acme.example/ns","rules":[{"match":"old/{x}","target":"https://new.example/{x}"},{"match":"old/{rest*}","target":"https://catch.example/{rest}"}]},
   {"prefix":"gone","owner":"urn:cap:name:admin:gone","strategy":"retired","reason":"ended"},
   {"prefix":"exact","owner":"urn:cap:name:admin:exact","strategy":"hosted","source":"urn:test:vocab","names":"exact","documents":["exact/core"]},
   {"prefix":"terms/","owner":"urn:cap:name:admin:terms","strategy":"hosted","source":"urn:test:terms","names":"terms"},
@@ -502,9 +502,19 @@ fn the_buffer_is_bounded_and_reports_what_it_dropped() {
         w.count("resmud", "2026-11"),
         format!("{MAX_BUFFERED_NAMES}\n")
     );
+    // Rule and miss partitions share this same ceiling, rather than each
+    // gaining a fresh buffer a client could fill independently.
+    w.resolve("acme/old/over").unwrap();
+    w.resolve("exact/over").unwrap_err();
+    for target in [
+        rule_target("acme", "old%2F%7Bx%7D", "2026-11"),
+        partition_target("miss", "exact", "2026-11"),
+    ] {
+        assert_eq!(text(&w.read(&target, &Capability::root()).unwrap()), "0\n");
+    }
     assert_eq!(
         w.flush().unwrap(),
-        format!("names stored: {MAX_BUFFERED_NAMES}, dropped: 5\n")
+        format!("names stored: {MAX_BUFFERED_NAMES}, dropped: 8\n")
     );
     assert_eq!(
         w.flush().unwrap(),
@@ -527,6 +537,30 @@ fn a_name_over_the_length_ceiling_answers_and_is_dropped() {
     assert!(w.resolve(&long).is_ok());
     assert_eq!(w.count("resmud", "2026-11"), "0\n");
     assert_eq!(w.flush().unwrap(), "names stored: 0, dropped: 1\n");
+    for (path, target, dropped) in [
+        (
+            format!("acme/old/{}", "x".repeat(MAX_NAME_BYTES)),
+            rule_target("acme", "old%2F%7Bx%7D", "2026-11"),
+            2,
+        ),
+        (
+            format!("exact/{}", "x".repeat(MAX_NAME_BYTES)),
+            partition_target("miss", "exact", "2026-11"),
+            1,
+        ),
+    ] {
+        let result = w.resolve(&path);
+        if path.starts_with("exact") {
+            result.unwrap_err();
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(text(&w.read(&target, &Capability::root()).unwrap()), "0\n");
+        assert_eq!(
+            w.flush().unwrap(),
+            format!("names stored: 0, dropped: {dropped}\n")
+        );
+    }
 }
 
 // --- the faces ---------------------------------------------------------------
@@ -776,6 +810,8 @@ fn declared_capabilities_are_the_ones_enforced() {
     for target in [
         "urn:name:stat:namespace:resmud:period:2026-11",
         "urn:name:stat:namespace:resmud",
+        "urn:name:stat:miss:namespace:resmud:period:2026-11",
+        "urn:name:stat:rule:namespace:acme:match:old%2F%7Bx%7D:period:2026-11",
     ] {
         assert_eq!(requires(target, Verb::Source), [CAP_ADMIN_ANY], "{target}");
     }
@@ -1034,4 +1070,267 @@ fn only_names_held_by_a_restricted_host_are_counted() {
     world.flush().unwrap();
     assert_eq!(world.count("exact", "2026-11"), "1\n");
     assert_eq!(world.count("terms/", "2026-11"), "1\n");
+}
+
+#[test]
+fn unmatched_names_have_their_own_monthly_partition() {
+    let w = World::new();
+    w.resolve("exact/missing").unwrap_err();
+    let count = w
+        .read(
+            "urn:name:stat:miss:namespace:exact:period:2026-11",
+            &Capability::root(),
+        )
+        .expect("a miss observation");
+    assert_eq!(text(&count), "1\n");
+}
+
+fn partition_target(kind: &str, prefix: &str, period: &str) -> String {
+    format!("urn:name:stat:{kind}:namespace:{prefix}:period:{period}")
+}
+
+fn rule_target(prefix: &str, rule: &str, period: &str) -> String {
+    format!("urn:name:stat:rule:namespace:{prefix}:match:{rule}:period:{period}")
+}
+
+#[test]
+fn rules_count_distinct_names_for_the_first_match_across_faces_and_months() {
+    let w = World::new();
+    for name in ["acme/old/a", "/acme//old/a", "acme/old/b"] {
+        w.resolve(name).unwrap();
+        w.doc(name).unwrap(); // The document face answers core's typed redirect.
+    }
+    let first = rule_target("acme", "old%2F%7Bx%7D", "2026-11");
+    let second = rule_target("acme", "old%2F%7Brest%2A%7D", "2026-11");
+    assert_eq!(text(&w.read(&first, &Capability::root()).unwrap()), "2\n");
+    assert_eq!(text(&w.read(&second, &Capability::root()).unwrap()), "0\n");
+    w.resolve("acme/old/a/b").unwrap();
+    assert_eq!(text(&w.read(&second, &Capability::root()).unwrap()), "1\n");
+    w.flush().unwrap();
+    assert_eq!(text(&w.read(&first, &Capability::root()).unwrap()), "2\n");
+    w.at(DECEMBER);
+    w.resolve("acme/old/a").unwrap();
+    assert_eq!(
+        text(
+            &w.read(
+                &rule_target("acme", "old%2F%7Bx%7D", "2026-12"),
+                &Capability::root()
+            )
+            .unwrap()
+        ),
+        "1\n"
+    );
+    assert_eq!(
+        w.read(&first, &Capability::root()).unwrap().expiry,
+        Expiry::Never
+    );
+}
+
+#[test]
+fn misses_are_distinct_and_do_not_include_other_errors() {
+    let w = World::new();
+    for _ in 0..2 {
+        w.resolve("exact/missing").unwrap_err();
+        w.doc("exact/missing").unwrap_err();
+        w.resolve("acme/unmatched").unwrap();
+        w.doc("acme/unmatched").unwrap();
+        w.resolve("terms/missing").unwrap_err();
+        w.resolve("gone/thing").unwrap_err();
+        w.resolve("unclaimed/thing").unwrap_err();
+        w.doc("big/thing").unwrap_err();
+    }
+    w.flush().unwrap();
+    for prefix in ["exact", "acme", "terms/"] {
+        assert_eq!(
+            text(
+                &w.read(
+                    &partition_target("miss", prefix, "2026-11"),
+                    &Capability::root()
+                )
+                .unwrap()
+            ),
+            "1\n"
+        );
+    }
+    for prefix in ["gone", "big"] {
+        assert_eq!(
+            text(
+                &w.read(
+                    &partition_target("miss", prefix, "2026-11"),
+                    &Capability::root()
+                )
+                .unwrap()
+            ),
+            "0\n"
+        );
+    }
+    assert_eq!(w.count("exact", "2026-11"), "0\n");
+}
+
+#[test]
+fn partition_storage_contains_only_names_and_periods_and_no_request_details() {
+    let w = World::new();
+    for name in ["acme/old/a", "acme/missing"] {
+        let request = Request::new(Verb::Source, iri("urn:name:resolve"))
+            .with_arg("path", ArgRef::Inline(name.as_bytes().to_vec()))
+            .with_arg("address", ArgRef::Inline(b"192.0.2.123".to_vec()))
+            .with_arg("user-agent", ArgRef::Inline(b"private-browser".to_vec()))
+            .with_arg("cookie", ArgRef::Inline(b"private-session".to_vec()))
+            .with_arg("visitor", ArgRef::Inline(b"private-visitor".to_vec()));
+        block_on(w.kernel.issue(request, &Capability::root())).unwrap();
+    }
+    assert_eq!(
+        w.store.touched.load(Ordering::SeqCst),
+        0,
+        "recording partitions only touches memory"
+    );
+    w.flush().unwrap();
+    let docs = w.store.docs.lock().unwrap();
+    let partitions: Vec<_> = docs
+        .iter()
+        .filter(|((_, key), _)| key.starts_with("urn:name:seen-source:namespace:-stat:"))
+        .collect();
+    assert_eq!(
+        partitions.len(),
+        4,
+        "one set and one period index per partition"
+    );
+    for ((_, key), doc) in partitions {
+        let value: serde_json::Value = serde_json::from_str(doc).unwrap();
+        let mut fields: Vec<_> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        fields.sort_unstable();
+        if key.contains(":period:") {
+            assert_eq!(fields, ["names", "period"]);
+            assert_eq!(value["period"], "2026-11");
+            assert_eq!(value["names"].as_array().unwrap().len(), 1);
+        } else {
+            assert_eq!(fields, ["periods"]);
+            assert_eq!(value["periods"], serde_json::json!(["2026-11"]));
+        }
+        for private in [
+            "192.0.2.123",
+            "private-browser",
+            "private-session",
+            "private-visitor",
+        ] {
+            assert!(!doc.contains(private));
+            assert!(!key.contains(private));
+        }
+    }
+}
+
+#[test]
+fn partitions_are_tenant_scoped_and_require_namespace_admin() {
+    let w = World::new();
+    let cap = |host: &str, admin: bool| {
+        let mut grants = vec![tenant_scope(host).unwrap()];
+        if admin {
+            grants.push(admin_scope("acme"));
+        }
+        Capability::scoped(grants)
+    };
+    for name in ["acme/old/a", "acme/missing"] {
+        w.resolve_as(name, &cap("one.example", false)).unwrap();
+    }
+    for target in [
+        rule_target("acme", "old%2F%7Bx%7D", "2026-11"),
+        partition_target("miss", "acme", "2026-11"),
+    ] {
+        assert_eq!(
+            text(&w.read(&target, &cap("one.example", true)).unwrap()),
+            "1\n"
+        );
+        assert_eq!(
+            text(&w.read(&target, &cap("two.example", true)).unwrap()),
+            "0\n"
+        );
+        assert!(matches!(
+            w.read(&target, &cap("one.example", false)),
+            Err(Error::Denied(_))
+        ));
+        assert!(matches!(
+            w.read(&target, &Capability::scoped([admin_scope("lore")])),
+            Err(Error::Denied(_))
+        ));
+    }
+}
+
+#[test]
+fn partitions_count_nothing_without_a_clock_or_for_historical_reads() {
+    for clocked in [false, true] {
+        let store = Store::default();
+        let space = bound(ikigai_name::space(), &store).bind(
+            Exact::new(ikigai_name::HISTORY_IRI),
+            FnEndpoint::new("history", |_: &Invocation<'_>| Ok(json(REGISTRY))),
+        );
+        let kernel = Kernel::new(Arc::new(space));
+        let kernel = if clocked {
+            kernel.with_clock(Arc::new(Moving(AtomicU64::new(NOVEMBER))))
+        } else {
+            kernel
+        };
+        for name in ["acme/old/a", "acme/missing", "exact/missing"] {
+            let mut request = Request::new(Verb::Source, iri("urn:name:resolve"))
+                .with_arg("path", ArgRef::Inline(name.as_bytes().to_vec()));
+            if clocked {
+                request = request.with_arg("as-of", ArgRef::Inline(b"2026-03-31".to_vec()));
+            }
+            let result = block_on(kernel.issue(request, &Capability::root()));
+            if name.starts_with("exact") {
+                result.unwrap_err();
+            } else {
+                result.unwrap();
+            }
+        }
+        for target in [
+            rule_target("acme", "old%2F%7Bx%7D", "2026-11"),
+            partition_target("miss", "acme", "2026-11"),
+            partition_target("miss", "exact", "2026-11"),
+        ] {
+            let repr = block_on(kernel.issue(
+                Request::new(Verb::Source, iri(&target)),
+                &Capability::root(),
+            ))
+            .unwrap();
+            assert_eq!(text(&repr), "0\n", "clocked: {clocked}, {target}");
+        }
+        block_on(kernel.issue(
+            Request::new(Verb::Sink, iri(FLUSH_IRI)),
+            &Capability::root(),
+        ))
+        .unwrap();
+        assert!(store.docs.lock().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn rule_and_miss_observations_have_distinct_measured_variables() {
+    let w = World::new();
+    w.resolve("acme/old/a").unwrap();
+    w.resolve("acme/missing").unwrap();
+    for (target, variable) in [
+        (
+            rule_target("acme", "old%2F%7Bx%7D", "2026-11"),
+            "names answered by rule",
+        ),
+        (
+            partition_target("miss", "acme", "2026-11"),
+            "unmatched names",
+        ),
+    ] {
+        let request = Request::new(Verb::Source, iri(&target))
+            .with_arg("as", ArgRef::Inline(b"text/turtle".to_vec()));
+        let repr = block_on(w.kernel.issue(request, &Capability::root())).unwrap();
+        let turtle = text(&repr);
+        assert_eq!(repr.repr_type.media_type, "text/turtle");
+        assert!(turtle.contains(&format!("<{target}> a schema:Observation")));
+        assert!(turtle.contains(&format!("schema:variableMeasured \"{variable}\"")));
+        assert!(turtle.contains("schema:value 1"));
+        assert!(turtle.contains("dcterms:temporal \"2026-11\"^^xsd:gYearMonth"));
+    }
 }
