@@ -3,9 +3,9 @@
 //!
 //! A host issues [`CHECK_TEMPLATE`] as Sink on a timer, holding [`CAP_CHECK`] and
 //! `urn:cap:net:<host>` for every HTTP target. The whole namespace is checked for
-//! authority before any probe leaves. Redirects and proxies are disabled, requests
-//! time out after 30 seconds, and response bodies are never read. A redirect status
-//! means the target answered; this job does not check the next hop.
+//! authority before any probe leaves. Probes use the host-bound `urn:http:head`
+//! through the kernel, which checks authority at every redirect hop and drops
+//! response bodies unread. HEAD reports presence, not exact HTTP status codes.
 //!
 //! Only registry targets are probed: the fallback and each rule's literal text
 //! before its first capture, deduplicated per namespace. No resolved name, visitor
@@ -20,13 +20,13 @@ use crate::admin::require_admin;
 use crate::tenant::tenant_of;
 use crate::{load, Namespace, Strategy, CAP_ADMIN_ANY, XSD_STRING};
 use ikigai_core::{
-    ActionSpec, ArgSpec, AsyncFnEndpoint, Description, EndpointSpace, Error, Invocation,
-    InvokeFuture, ReprType, Representation, Result, UriTemplate, Verb,
+    ActionSpec, ArgRef, ArgSpec, AsyncFnEndpoint, Description, EndpointSpace, Error, Invocation,
+    InvokeFuture, Iri, ReprType, Representation, Request, Result, UriTemplate, Verb,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 /// The host job's authority, separate from namespace administration.
 pub const CAP_CHECK: &str = "urn:cap:name:target-health-check";
@@ -46,7 +46,7 @@ struct Target {
 #[derive(Clone, Serialize)]
 struct Report {
     prefix: String,
-    checked_at_unix_ms: u64,
+    checked_at_unix_ms: Option<u64>,
     targets: Vec<Target>,
 }
 
@@ -107,8 +107,12 @@ fn lock_error() -> Error {
     Error::Unavailable("name: target health results are unavailable".into())
 }
 
-/// Build the two opt-in faces sharing one in-memory result store. No client is
-/// constructed and no traffic leaves until the host issues the check Sink.
+/// Build the two opt-in faces sharing one in-memory result store.
+///
+/// The host must bind `urn:http:head` (for example with `ikigai_http::space`)
+/// and inject a kernel clock for timestamps. Without a clock, the timestamp is
+/// null. No client is constructed here; traffic uses only the host transport
+/// when the host issues the check Sink.
 pub fn space() -> EndpointSpace {
     let reports: Reports = Arc::new(Mutex::new(BTreeMap::new()));
     let read_reports = reports.clone();
@@ -173,48 +177,53 @@ pub fn space() -> EndpointSpace {
                 // Preflight every host before sending even the first request.
                 for url in urls.iter().flatten() {
                     let host = url.host_str().expect("validated host");
-                    let host =
-                        crate::tenant::normalize_host(host).unwrap_or_else(|| host.to_string());
                     let scope = format!("urn:cap:net:{host}");
-                    if !inv.capability.allows(&scope) {
+                    if !ikigai_http::net_allows_port(
+                        inv.capability,
+                        host,
+                        url.port_or_known_default(),
+                        url.path(),
+                    ) {
                         return Err(Error::Denied(format!(
                             "name: checking target health for {prefix:?} needs {scope}"
                         )));
                     }
                 }
-                let client = reqwest::Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .no_proxy()
-                    .timeout(Duration::from_secs(30))
-                    .user_agent("ikigai-name target-health")
-                    .build()
-                    .map_err(|_| {
-                        Error::Unavailable(
-                            "name: could not make the target health HTTP client".into(),
-                        )
-                    })?;
                 let mut report = Report {
                     prefix: prefix.to_string(),
-                    checked_at_unix_ms: SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_err(|_| {
-                            Error::Unavailable(
-                                "name: target health needs a clock after the Unix epoch".into(),
-                            )
-                        })?
-                        .as_millis()
-                        .try_into()
-                        .unwrap_or(u64::MAX),
+                    checked_at_unix_ms: inv.now().map(|now| now.as_millis()),
                     targets: Vec::new(),
                 };
                 for (target, url) in bases.into_iter().zip(urls) {
                     let start = Instant::now();
                     let (status, outcome) = match url {
                         None => (None, "unsupported"),
-                        Some(url) => match client.get(url).send().await {
-                            Ok(response) => (Some(response.status().as_u16()), "answered"),
-                            Err(_) => (None, "unreachable"),
-                        },
+                        Some(url) => {
+                            let request = Request::new(
+                                Verb::Exists,
+                                Iri::parse("urn:http:head").expect("valid IRI"),
+                            )
+                            .with_arg("url", ArgRef::Inline(url.to_string().into_bytes()))
+                            .with_arg("max_age", ArgRef::Inline(b"0".to_vec()));
+                            match inv.issue(request).await {
+                                Ok(response) => {
+                                    let status = response
+                                        .repr_type
+                                        .params
+                                        .get("http-status")
+                                        .and_then(|s| s.parse::<u16>().ok());
+                                    match response.bytes.as_slice() {
+                                        b"true" => (status, "answered"),
+                                        b"false" => (status, "gone"),
+                                        _ if status.is_some() => (status, "answered"),
+                                        _ => (None, "unreachable"),
+                                    }
+                                }
+                                Err(Error::Denied(_) | Error::Refused(_)) => (None, "refused"),
+                                Err(Error::NotFound(_)) => (None, "gone"),
+                                Err(_) => (None, "unreachable"),
+                            }
+                        }
                     };
                     report.targets.push(Target {
                         target,

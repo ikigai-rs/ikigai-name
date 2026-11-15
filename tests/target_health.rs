@@ -20,6 +20,44 @@ fn registry(target: &str, rules: Value) -> Value {
         "strategy": "redirect", "target": target, "rules": rules}]})
 }
 
+// Test-host transport: redirects belong to ikigai-http, never to the client.
+struct Transport(reqwest::Client);
+
+#[async_trait::async_trait]
+impl ikigai_http::HttpTransport for Transport {
+    async fn send(
+        &self,
+        request: ikigai_http::HttpRequest,
+    ) -> Result<ikigai_http::HttpResponse, String> {
+        use futures_util::TryStreamExt;
+        let response = self
+            .0
+            .request(
+                reqwest::Method::from_bytes(request.method.as_str().as_bytes()).unwrap(),
+                request.url,
+            )
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        let headers = response
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap().to_string()))
+            .collect();
+        Ok(ikigai_http::HttpResponse {
+            status,
+            headers,
+            body: ikigai_http::HttpBody::from_reader(
+                response
+                    .bytes_stream()
+                    .map_err(std::io::Error::other)
+                    .into_async_read(),
+            ),
+        })
+    }
+}
+
 fn mutable_kernel(value: Value) -> (Kernel, Arc<Mutex<Value>>) {
     let value = Arc::new(Mutex::new(value));
     let source_value = value.clone();
@@ -32,8 +70,23 @@ fn mutable_kernel(value: Value) -> (Kernel, Arc<Mutex<Value>>) {
             ))
         }),
     );
-    let space = ikigai_core::Fallback::new(vec![Arc::new(health), Arc::new(ikigai_name::space())]);
-    (Kernel::new(Arc::new(space)), value)
+    let transport = Transport(
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap(),
+    );
+    let space = ikigai_core::Fallback::new(vec![
+        Arc::new(health),
+        Arc::new(ikigai_name::space()),
+        Arc::new(ikigai_http::space(Arc::new(transport))),
+    ]);
+    (
+        Kernel::new(Arc::new(space)).with_clock(Arc::new(ikigai_core::FixedClock::at(123456))),
+        value,
+    )
 }
 
 struct Server {
@@ -73,9 +126,13 @@ impl Server {
                             bytes.extend_from_slice(&part[..size]);
                         }
                         let request = String::from_utf8_lossy(&bytes).into_owned();
-                        let status = if request.starts_with("GET /missing ") {
+                        let status = if request.starts_with("HEAD /missing ")
+                            || request.starts_with("HEAD /missing/ ")
+                        {
                             404
-                        } else if request.starts_with("GET /move ") {
+                        } else if request.starts_with("HEAD /move ")
+                            || request.starts_with("HEAD /move/ ")
+                        {
                             302
                         } else {
                             200
@@ -109,20 +166,7 @@ impl Drop for Server {
 }
 
 fn kernel(target: &str) -> Kernel {
-    let registry = json!({"namespaces": [{
-        "prefix": "acme", "owner": "urn:cap:name:admin:staff",
-        "strategy": "redirect", "target": target
-    }]})
-    .to_string();
-    Kernel::new(Arc::new(ikigai_name::target_health::space().bind(
-        Exact::new(ikigai_name::REGISTRY_IRI),
-        FnEndpoint::new("registry", move |_: &Invocation<'_>| {
-            Ok(Representation::new(
-                ReprType::new("application/json"),
-                registry.as_bytes().to_vec(),
-            ))
-        }),
-    )))
+    mutable_kernel(registry(target, json!([]))).0
 }
 
 async fn issue(
@@ -170,7 +214,7 @@ async fn the_host_job_records_a_failed_connection_for_the_administrator() {
 }
 
 #[tokio::test]
-async fn literal_bases_are_deduplicated_and_redirects_and_bodies_are_not_followed() {
+async fn literal_bases_are_deduplicated_and_redirect_hops_are_authorized_without_bodies() {
     let next = Server::start(String::new());
     let server = Server::start(next.base.replace("127.0.0.1", "localhost") + "/private");
     let (kernel, _) = mutable_kernel(registry(
@@ -195,20 +239,15 @@ async fn literal_bases_are_deduplicated_and_redirects_and_bodies_are_not_followe
     ]);
     let report = issue(&kernel, Verb::Sink, CHECK, &cap).await.unwrap();
     let checks = report["targets"].as_array().unwrap();
-    assert!(
-        checks.iter().all(|check| check["status"].is_u64()),
-        "{report}; requests: {:?}",
-        server.requests.lock().unwrap()
-    );
     assert_eq!(checks.len(), 4);
+    assert!(checks.iter().all(|check| check["status"].is_null()));
     assert_eq!(
         checks
             .iter()
-            .map(|check| check["status"].as_u64().unwrap())
+            .map(|check| check["outcome"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        [200, 404, 302, 200]
+        ["answered", "gone", "refused", "answered"]
     );
-    assert!(checks.iter().all(|check| check["outcome"] == "answered"));
     let requests = server.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 4);
     assert!(requests
@@ -395,10 +434,10 @@ fn the_standalone_timer_checks_redirects_in_each_tenants_own_registry() {
     assert_eq!(requests.len(), 2);
     assert!(requests
         .iter()
-        .any(|r| r.starts_with("GET /first.example ")));
+        .any(|r| r.starts_with("HEAD /first.example ")));
     assert!(requests
         .iter()
-        .any(|r| r.starts_with("GET /second.example ")));
+        .any(|r| r.starts_with("HEAD /second.example ")));
     for tenant in ["first.example", "second.example"] {
         assert_eq!(
             std::fs::read_dir(host.root.join(tenant)).unwrap().count(),
@@ -442,4 +481,115 @@ fn the_opt_in_faces_conform_to_their_declared_contracts() {
         .fixture(Fixture::new("target-health-check", Verb::Sink).binding("prefix", "acme"))
         .run_blocking(&kernel);
     assert!(report.is_clean(), "{report}");
+}
+
+#[tokio::test]
+async fn probes_use_the_kernel_endpoint_and_injected_clock() {
+    let health = ikigai_name::target_health::space()
+        .bind(
+            Exact::new(ikigai_name::REGISTRY_IRI),
+            FnEndpoint::new("registry", |_: &Invocation<'_>| {
+                Ok(Representation::new(
+                    ReprType::new("application/json"),
+                    registry("https://example.org/base", json!([]))
+                        .to_string()
+                        .into_bytes(),
+                ))
+            }),
+        )
+        .bind(
+            Exact::new("urn:http:head"),
+            FnEndpoint::new("http-head", |inv: &Invocation<'_>| {
+                assert_eq!(inv.request.verb, Verb::Exists);
+                assert_eq!(inv.inline_str("url")?, "https://example.org/base");
+                assert_eq!(inv.inline_str("max_age")?, "0");
+                assert!(!inv.capability.allows("urn:cap:net:other.example"));
+                Ok(Representation::new(
+                    ReprType::new("text/plain"),
+                    b"false".to_vec(),
+                ))
+            }),
+        );
+    let kernel =
+        Kernel::new(Arc::new(health)).with_clock(Arc::new(ikigai_core::FixedClock::at(123456)));
+    let report = issue(
+        &kernel,
+        Verb::Sink,
+        CHECK,
+        &Capability::scoped([
+            ikigai_name::target_health::CAP_CHECK,
+            "urn:cap:net:example.org",
+        ]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report["checked_at_unix_ms"], 123456);
+    assert_eq!(report["targets"][0]["outcome"], "gone");
+    assert!(report["targets"][0]["status"].is_null());
+}
+
+#[tokio::test]
+async fn port_and_path_exclusions_are_preflighted_before_the_first_probe() {
+    let server = Server::start(String::new());
+    let (kernel, _) = mutable_kernel(registry(
+        &format!("{}/a", server.base),
+        json!([{"match":"z", "target":format!("{}/z", server.base)}]),
+    ));
+    let port = reqwest::Url::parse(&server.base).unwrap().port().unwrap();
+    for exclusion in [
+        "urn:cap:net:-127.0.0.1/z".to_string(),
+        format!("urn:cap:net:-127.0.0.1:{port}/z"),
+    ] {
+        let cap = Capability::scoped([
+            ikigai_name::target_health::CAP_CHECK.to_string(),
+            "urn:cap:net:127.0.0.1".to_string(),
+            exclusion,
+        ]);
+        assert!(matches!(
+            issue(&kernel, Verb::Sink, CHECK, &cap).await,
+            Err(ikigai_core::Error::Denied(_))
+        ));
+    }
+    assert!(server.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn authorized_redirects_report_the_final_presence_and_checks_are_fresh() {
+    let next = Server::start(String::new());
+    let server = Server::start(format!("{}/missing", next.base));
+    let kernel = kernel(&format!("{}/move", server.base));
+    for _ in 0..2 {
+        let report = issue(&kernel, Verb::Sink, CHECK, &Capability::root())
+            .await
+            .unwrap();
+        assert_eq!(report["targets"][0]["outcome"], "gone");
+        assert!(report["targets"][0]["status"].is_null());
+        assert!(!report.to_string().contains("/missing"));
+    }
+    assert_eq!(server.requests.lock().unwrap().len(), 2);
+    assert_eq!(next.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_kernel_without_a_clock_never_substitutes_the_system_clock() {
+    let space = ikigai_name::target_health::space().bind(
+        Exact::new(ikigai_name::REGISTRY_IRI),
+        FnEndpoint::new("registry", |_: &Invocation<'_>| {
+            Ok(Representation::new(
+                ReprType::new("application/json"),
+                registry("urn:example:unsupported", json!([]))
+                    .to_string()
+                    .into_bytes(),
+            ))
+        }),
+    );
+    let report = issue(
+        &Kernel::new(Arc::new(space)),
+        Verb::Sink,
+        CHECK,
+        &Capability::root(),
+    )
+    .await
+    .unwrap();
+    assert!(report["checked_at_unix_ms"].is_null());
 }

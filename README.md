@@ -670,23 +670,28 @@ HTTP targets must be authorized before any of its probes leave. An unlisted host
 is refused and the job continues with other namespaces. Tenants use their own
 registries and separate results. Public HTTP requests receive no job authority.
 
-Each run makes one GET per distinct literal target in a redirect namespace:
+Each run makes one HEAD per distinct literal target in a redirect namespace:
 its fallback target and each rule's literal base before its first `{capture}`.
-It never substitutes a resolved name. Requests time out after 30 seconds, use no
-proxy, follow no redirects, and read no response body. All HTTP statuses are
-recorded, including 3xx, 4xx, and 5xx; `answered` means an HTTP response arrived,
-not that it succeeded or that a redirect's next hop works. Connection, TLS, and
-timeout failures are `unreachable`; non-HTTP URLs and URLs with credentials are
-`unsupported`. These checks say nothing about individual names below a base.
+It never substitutes a resolved name. Probes issue `urn:http:head` through the
+kernel under the job's capability and read no response body. The host supplies
+the transport and its timeout (30 seconds in the standalone server).
+`ikigai-http` follows redirects, checking the host, port, and path grant at every
+hop. A denied hop is `refused`; connection, TLS, timeout, and redirect failures
+are `unreachable`. Non-HTTP URLs and URLs with credentials are `unsupported`.
+HEAD returns `gone` for a final 404 or 410, and `answered` for other responses,
+including server errors. It does not expose exact status codes, so `status` is
+null unless supplied in the endpoint's `http-status` metadata (such as 304).
+These checks say nothing about individual names below a base.
 
 For an embedded host, bind `ikigai_name::target_health::space()` alongside
-`ikigai_name::space()` and issue Sink to
+`ikigai_name::space()` and a host-backed `ikigai_http::space(transport)`, inject
+a kernel clock, and issue Sink to
 `urn:name:target-health-check:namespace:{prefix}` under the job capability.
 Read Source at `urn:name:target-health:namespace:{prefix}` under the namespace's
 **recorded owner** capability. These two faces are opt-in; the regular name space
 does not bind them. There is no public HTTP route for them in the standalone server.
 
-The JSON answer labels `prefix`, `checked_at_unix_ms` (UTC Unix milliseconds), and
+The JSON answer labels `prefix`, `checked_at_unix_ms` (UTC Unix milliseconds, null without a kernel clock), and
 `targets`. Each target has its literal `target`, nullable HTTP `status`, `outcome`,
 and `elapsed_ms` until headers or failure. It retains only the latest completed
 check in memory; a restart loses it. A namespace with no check, or whose target

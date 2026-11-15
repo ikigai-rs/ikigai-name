@@ -918,12 +918,15 @@ async fn main() -> std::io::Result<()> {
         spaces.push(Arc::new(ikigai_name::target_health::space()));
     }
     #[cfg(feature = "git")]
-    if let Some(host) = &git_host {
+    if git_host.is_some() || options.target_health_every.is_some() {
         let transport = git::Transport::new().unwrap_or_else(|e| {
             eprintln!("ikigai-name-server: cannot make an HTTP client: {e}");
             std::process::exit(2)
         });
         spaces.push(Arc::new(ikigai_http::space(Arc::new(transport))));
+    }
+    #[cfg(feature = "git")]
+    if let Some(host) = &git_host {
         spaces.push(Arc::new(ikigai_secret::space(host.secrets.clone())));
         spaces.push(Arc::new(ikigai_shacl::space()));
     }
@@ -961,14 +964,15 @@ async fn main() -> std::io::Result<()> {
         }),
     );
     let space = ikigai_core::Fallback::new(spaces);
-    // A clock only when counting: it is how a name is put in its month, and with none
-    // the module counts nothing, so a server not asked to count is exactly as it was.
+    // Counting and host-run target checks use the injected kernel clock.
     let kernel = Kernel::new(Arc::new(space));
-    let kernel = Arc::new(if options.count_names {
-        kernel.with_clock(Arc::new(SystemClock))
-    } else {
-        kernel
-    });
+    let kernel = Arc::new(
+        if options.count_names || options.target_health_every.is_some() {
+            kernel.with_clock(Arc::new(SystemClock))
+        } else {
+            kernel
+        },
+    );
 
     let mut config = EdgeConfig {
         // A path not in the table 404s before it reaches a resource, so the

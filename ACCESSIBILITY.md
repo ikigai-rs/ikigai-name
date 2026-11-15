@@ -83,6 +83,14 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   partial report output. `tests/server_report.rs` checks the real binary over fixture
   `seen/` sets, including tenant labels, empty output wording, Turtle parsing, and
   errors. These are text and structural checks, not assistive-technology evaluation.
+- **Redirect target health** (`src/target_health.rs`): the opt-in host job and owner-only
+  read face answer labeled JSON: `prefix`, `checked_at_unix_ms` (null without a kernel
+  clock), and `targets`. Each target labels its registry base, nullable HTTP `status`,
+  `outcome`, and `elapsed_ms`. HEAD outcomes distinguish `answered`, `gone`, `refused`,
+  `unreachable`, and `unsupported`; an exact status is absent when the HTTP endpoint
+  does not expose it. Refusals name the namespace and missing authority or check.
+  `tests/target_health.rs` checks the labels, authorization, injected clock, and HTTP
+  behavior; no assistive technology evaluation has been performed.
 - **A namespace served from a repository** (`src/git.rs`): a refresh answers one line naming the
   namespace, and what it did (`"acme": now serving <id>`, `"acme": unchanged, serving <id>`,
   `"acme": refused <id>, and the last good version keeps serving: <why>`, `"acme": nothing
@@ -253,8 +261,8 @@ with people or assistive technology:
 - On the standalone server, the owner reads a refusal in the forge's webhook deliveries, which is that
   forge's page rather than this module's, and on GitLab, which this door does not accept, or for a
   refusal the timer found, nowhere. Only the operator can read `git/status.{prefix}.json` there.
-- A status on a kernel with no clock holds no times, and the standalone server has none without
-  `--count-names`.
+- A status on a kernel with no clock holds no times, and the standalone server injects one with
+  `--count-names` or `--target-health-every`.
 - A refusal for a host that is not a tenant cannot say which host would work: it names the host it
   was given and no next step, because the list of tenants is not this refusal's to disclose.
 
