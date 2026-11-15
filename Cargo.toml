@@ -1,6 +1,6 @@
 [package]
 name = "ikigai-name"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 # Measured 2026-10-14 (ledger #195), not guessed: on 1.87, clippy -D warnings and the
 # tests pass with and without `server`; on 1.86 the library itself fails (ikigai-core
@@ -18,10 +18,12 @@ keywords = ["ikigai", "roc", "iri", "purl", "rdf"]
 categories = ["web-programming", "data-structures"]
 
 [dependencies]
-# 0.2.0 is the streams release (ledger #2261). The old 0.1 pin meant
-# <0.2.0 under 0.x caret rules; this floor admits compatible 0.2.x patches.
-ikigai-core = "0.2.0"
-ikigai-fn = "0.7.0"
+# Core 0.3.2 is the floor required by web 0.5.0 below. A 0.x caret is also
+# a ceiling: ^0.3.2 admits compatible patches but excludes core 0.4.
+# The other ikigai floors below are their first compatible core-0.3 releases;
+# each 0.x caret likewise excludes the next minor release.
+ikigai-core = "0.3.2"
+ikigai-fn = "0.10.0"
 async-trait = "0.1"
 # The registry is data the operator edits, so it is parsed, not compiled in.
 # JSON matches the house configuration format (edge-routes.json, clients.json).
@@ -30,26 +32,28 @@ serde_json = "1"
 # The contrast floor. Used for its color maths, so the documentation palettes
 # are CHECKED rather than asserted — a page a newcomer must read is the wrong
 # place to discover that "muted" meant "illegible".
-ikigai-a11y = "0.4.0"
+ikigai-a11y = "0.6.0"
 # The signature on a repository's push webhook, which only a shared key can make.
 hmac = "0.12"
 sha2 = "0.10"
 
-# Server-only transports and stores, released against the streams core.
+# Server-only transports and stores on core 0.3. Web 0.5.0 is the first 0.5
+# release with the redirect/Gone face; its caret excludes 0.6.0.
 # SPARQL retains the typed missing-query refusal tested by conformance.
-ikigai-web = { version = "0.2.0", optional = true }
-ikigai-fs = { version = "0.2.2", optional = true }
-ikigai-sparql = { version = "0.3.1", optional = true }
+ikigai-web = { version = "0.5.0", optional = true }
+ikigai-fs = { version = "0.4.0", optional = true }
+ikigai-sparql = { version = "0.5.0", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"], optional = true }
 # The vendored htmx the documentation page loads, as `urn:iki:ui:htmx` (ledger #2737):
-# the shared home for it, rather than a private copy. 0.4.0 is the release on core 0.2;
-# a caret on it is <0.5.0.
-ikigai-ui = { version = "0.4.0", optional = true }
+# the shared home for it, rather than a private copy. 0.5.0 is its core-0.3 floor;
+# a caret on it is also a ceiling, <0.6.0.
+ikigai-ui = { version = "0.5.0", optional = true }
 # The modules and the client behind `--git`, and only behind it (see below): an outbound
-# HTTP client, the secret store and the validator without rudof, each on core 0.2.
-ikigai-http = { version = "0.4.3", optional = true }
-ikigai-secret = { version = "0.3.0", optional = true }
-ikigai-shacl = { version = "0.5.0", default-features = false, optional = true }
+# HTTP client, the secret store and the validator without rudof. Their core-0.3
+# floors are 0.6.0, 0.4.0 and 0.6.0; carets exclude 0.7, 0.5 and 0.7 respectively.
+ikigai-http = { version = "0.6.0", optional = true }
+ikigai-secret = { version = "0.4.0", optional = true }
+ikigai-shacl = { version = "0.6.0", default-features = false, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 futures-util = { version = "0.3", features = ["io"], optional = true }
 
@@ -97,18 +101,19 @@ required-features = ["git"]
 [dev-dependencies]
 futures = "0.3"
 # Walk every bound endpoint, including DATATYPES, FAILURES, BODIES and
-# BODY-INPUTS by default (0.12.0; ledger #2581).
-ikigai-conformance = "0.12.0"
+# BODY-INPUTS by default (since 0.12.0; ledger #2581). The core-0.3 floor is
+# 0.14.0, and its caret also sets a ceiling of <0.15.0.
+ikigai-conformance = "0.14.0"
 # Match the server's real SPARQL engine for the conformance walk.
-ikigai-sparql = "0.3.1"
-# The real urn:repo:log behind as-of resolution, over a scratch repository. 0.3.x
-# because that is the line on core 0.2: 0.4.0 is on core 0.3, and ikigai-web has no
-# release on core 0.3 for the server to move with it.
-ikigai-repo = "0.3.2"
+ikigai-sparql = "0.5.0"
+# The real urn:repo:log behind as-of resolution, over a scratch repository.
+# 0.4.0 is its core-0.3 floor; the caret is also a ceiling of <0.5.0.
+ikigai-repo = "0.4.0"
 # The real validator and secret store behind a repository-backed namespace, each on the
-# line that is on core 0.2. The validator without rudof, which it does not need here:
+# core-0.3 floor used by the optional server dependencies above, with the same
+# caret ceilings. The validator without rudof, which it does not need here:
 # its subset refuses by name any SHACL term it does not cover.
-ikigai-shacl = { version = "0.5.0", default-features = false }
-ikigai-secret = "0.3.0"
+ikigai-shacl = { version = "0.6.0", default-features = false }
+ikigai-secret = "0.4.0"
 # forge_reader's own tests, over a canned transport.
-ikigai-http = "0.4.3"
+ikigai-http = "0.6.0"
