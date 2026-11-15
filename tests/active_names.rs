@@ -363,9 +363,9 @@ fn resolving_a_name_never_touches_the_store() {
 }
 
 /// Everything a request could carry is on this one, and the atom holds names and
-/// periods. Its keys are compared exactly, so a field added later fails here.
+/// periods and aggregate drops. Its keys are compared exactly, so a field added later fails here.
 #[test]
-fn the_stored_atom_holds_only_names_and_periods() {
+fn the_stored_atom_holds_only_names_periods_and_dropped_count() {
     let w = World::new();
     let visitor = Capability::scoped(["urn:cap:principal:urn:person:someone"]);
     let request = Request::new(Verb::Source, iri("urn:name:resolve"))
@@ -387,7 +387,7 @@ fn the_stored_atom_holds_only_names_and_periods() {
     let parsed: serde_json::Value = serde_json::from_str(&set).unwrap();
     assert_eq!(
         parsed,
-        serde_json::json!({"period": "2026-11", "names": ["resmud/core", "resmud/other"]})
+        serde_json::json!({"period": "2026-11", "names": ["resmud/core", "resmud/other"], "dropped": 0})
     );
     let list = &stored[&(None, "urn:name:seen-source:namespace:resmud".to_string())];
     let parsed: serde_json::Value = serde_json::from_str(list).unwrap();
@@ -1168,7 +1168,7 @@ fn misses_are_distinct_and_do_not_include_other_errors() {
 }
 
 #[test]
-fn partition_storage_contains_only_names_and_periods_and_no_request_details() {
+fn partition_storage_contains_only_names_periods_drops_and_no_request_details() {
     let w = World::new();
     for name in ["acme/old/a", "acme/missing"] {
         let request = Request::new(Verb::Source, iri("urn:name:resolve"))
@@ -1205,7 +1205,8 @@ fn partition_storage_contains_only_names_and_periods_and_no_request_details() {
             .collect();
         fields.sort_unstable();
         if key.contains(":period:") {
-            assert_eq!(fields, ["names", "period"]);
+            assert_eq!(fields, ["dropped", "names", "period"]);
+            assert_eq!(value["dropped"], 0);
             assert_eq!(value["period"], "2026-11");
             assert_eq!(value["names"].as_array().unwrap().len(), 1);
         } else {
@@ -1333,4 +1334,53 @@ fn rule_and_miss_observations_have_distinct_measured_variables() {
         assert!(turtle.contains("schema:value 1"));
         assert!(turtle.contains("dcterms:temporal \"2026-11\"^^xsd:gYearMonth"));
     }
+}
+
+#[test]
+fn dropped_counts_survive_flush_failures_and_accumulate_per_month() {
+    let w = World::new();
+    let long = format!("resmud/{}", "x".repeat(MAX_NAME_BYTES));
+    w.resolve(&long).unwrap();
+    w.store.failing.store(true, Ordering::SeqCst);
+    assert!(w.flush().is_err());
+    w.store.failing.store(false, Ordering::SeqCst);
+    assert_eq!(w.flush().unwrap(), "names stored: 0, dropped: 1\n");
+    let stored = || -> serde_json::Value {
+        serde_json::from_str(&w.store.set(None, "resmud", "2026-11").unwrap()).unwrap()
+    };
+    assert_eq!(stored()["dropped"], 1);
+    w.resolve(&format!("{long}other")).unwrap();
+    assert_eq!(w.flush().unwrap(), "names stored: 0, dropped: 1\n");
+    assert_eq!(stored()["dropped"], 2);
+    w.flush().unwrap();
+    assert_eq!(
+        stored()["dropped"],
+        2,
+        "a repeat flush cannot add drops twice"
+    );
+    w.at(DECEMBER);
+    w.resolve(&long).unwrap();
+    w.flush().unwrap();
+    assert_eq!(stored()["dropped"], 2);
+    let december: serde_json::Value =
+        serde_json::from_str(&w.store.set(None, "resmud", "2026-12").unwrap()).unwrap();
+    assert_eq!(december["dropped"], 1);
+}
+
+#[test]
+fn monthly_reports_read_only_stored_counts_and_require_every_owner() {
+    let w = World::new();
+    w.resolve("resmud/core").unwrap();
+    let target = "urn:name:monthly-report:period:2026-11";
+    let report = w.read(target, &Capability::root()).unwrap();
+    assert!(text(&report).contains("namespace: \"resmud\"\tactive names: 0"));
+    assert_eq!(w.store.writes.load(Ordering::SeqCst), 0);
+    assert!(w
+        .read(target, &Capability::scoped([admin_scope("resmud")]))
+        .is_err());
+    w.flush().unwrap();
+    let writes = w.store.writes.load(Ordering::SeqCst);
+    let report = w.read(target, &Capability::root()).unwrap();
+    assert!(text(&report).contains("namespace: \"resmud\"\tactive names: 1"));
+    assert_eq!(w.store.writes.load(Ordering::SeqCst), writes);
 }

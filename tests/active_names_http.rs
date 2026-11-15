@@ -167,8 +167,8 @@ fn names_resolved_over_http_are_stored_in_files() {
     let period = set["period"].as_str().expect("a period").to_string();
     assert_eq!(
         set,
-        serde_json::json!({"period": period, "names": ["resmud/core", "resmud/other"]}),
-        "names and the period, and nothing else"
+        serde_json::json!({"period": period, "names": ["resmud/core", "resmud/other"], "dropped": 0}),
+        "names, period and dropped count, with no request details"
     );
     wait_for_set(&root, "acme~2Fvocab", 1);
     assert!(
@@ -354,7 +354,8 @@ fn rule_and_miss_partitions_are_flushed_by_the_server() {
     };
     let mut names = Vec::new();
     for set in held {
-        assert_eq!(set.as_object().unwrap().len(), 2);
+        assert_eq!(set.as_object().unwrap().len(), 3);
+        assert_eq!(set["dropped"], 0);
         assert!(set["period"].as_str().is_some());
         let members = set["names"].as_array().unwrap();
         assert_eq!(members.len(), 1);

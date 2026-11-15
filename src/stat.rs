@@ -27,7 +27,8 @@
 //! past it a new name is dropped and the next flush reports how many were, and so is
 //! one over [`MAX_NAME_BYTES`], or one past [`MAX_SEEN_NAMES`] in a stored set, which
 //! is what stops a client growing a set without limit. A count at that ceiling is a
-//! floor.
+//! floor. Each stored set also retains its cumulative dropped membership count;
+//! legacy sets without `dropped` default to zero recorded drops.
 //!
 //! ## A cached answer must not hide a new month
 //!
@@ -47,7 +48,7 @@
 //! never touches a file. A host binds [`SEEN_TEMPLATE`], and keys it on
 //! [`tenant_of`] if it has tenants. Each set lives at
 //! `urn:name:seen-source:namespace:{prefix}:period:{yyyy-mm}` as
-//! `{"period":"2026-11","names":["resmud/core"]}`, and the periods a namespace holds
+//! `{"period":"2026-11","names":["resmud/core"],"dropped":0}`, and the periods a namespace holds
 //! at `urn:name:seen-source:namespace:{prefix}` as `{"periods":["2026-11"]}`.
 //!
 //! Rule and miss sets use the same store with keys
@@ -107,6 +108,9 @@ pub const MAX_SEEN_NAMES: usize = 1_000_000;
 /// Where one namespace's count for one month is answered.
 pub(crate) const COUNT_TEMPLATE: &str = "urn:name:stat:namespace:{prefix}:period:{period}";
 
+/// Where a tenant's stored counts for one month are answered.
+pub const MONTHLY_REPORT_TEMPLATE: &str = "urn:name:monthly-report:period:{period}";
+
 /// Where one namespace's report is answered.
 pub(crate) const REPORT_TEMPLATE: &str = "urn:name:stat:namespace:{prefix}";
 
@@ -117,12 +121,14 @@ const TEXT_PLAIN: &str = "text/plain";
 const TEXT_TURTLE: &str = "text/turtle";
 
 /// The stored atom: one namespace's names for one period. Its partition keys are in
-/// its IRI, so the document holds the period and the names and nothing else.
+/// its IRI. Dropped memberships are retained as a count, never as names.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SeenSet {
     period: String,
     names: BTreeSet<String>,
+    #[serde(default)]
+    dropped: usize,
 }
 
 /// The periods a namespace holds a set for.
@@ -159,6 +165,7 @@ pub(crate) enum CountKind {
 struct Buffer {
     sets: BTreeMap<SetKey, BTreeSet<String>>,
     held: usize,
+    dropped_sets: BTreeMap<SetKey, usize>,
     dropped: BTreeMap<Option<String>, usize>,
 }
 
@@ -203,7 +210,9 @@ impl Seen {
         let known = buffer.sets.get(&key).is_some_and(|set| set.contains(&name));
         if !known {
             if name.len() > MAX_NAME_BYTES || buffer.held >= MAX_BUFFERED_NAMES {
-                *buffer.dropped.entry(key.tenant).or_default() += 1;
+                *buffer.dropped.entry(key.tenant.clone()).or_default() += 1;
+                buffer.sets.entry(key.clone()).or_default();
+                *buffer.dropped_sets.entry(key).or_default() += 1;
             } else {
                 buffer.sets.entry(key).or_default().insert(name);
                 buffer.held += 1;
@@ -244,7 +253,7 @@ impl Seen {
 
     /// Forget names now stored. A name resolved again meanwhile comes back on its next
     /// miss, and the flush after that finds it already stored.
-    fn forget(&self, key: &SetKey, written: &BTreeSet<String>) {
+    fn forget(&self, key: &SetKey, written: &BTreeSet<String>, dropped: usize) {
         let mut buffer = self.lock();
         let Some(set) = buffer.sets.get_mut(key) else {
             return;
@@ -252,10 +261,18 @@ impl Seen {
         let before = set.len();
         set.retain(|name| !written.contains(name));
         let removed = before - set.len();
-        if set.is_empty() {
+        buffer.held -= removed;
+        if let Some(pending) = buffer.dropped_sets.get_mut(key) {
+            *pending -= dropped;
+            if *pending == 0 {
+                buffer.dropped_sets.remove(key);
+            }
+        }
+        if buffer.sets.get(key).is_some_and(BTreeSet::is_empty)
+            && !buffer.dropped_sets.contains_key(key)
+        {
             buffer.sets.remove(key);
         }
-        buffer.held -= removed;
     }
 
     fn add_dropped(&self, tenant: Option<&str>, count: usize) {
@@ -494,6 +511,7 @@ async fn store_names(
     inv: &Invocation<'_>,
     key: &SetKey,
     names: &BTreeSet<String>,
+    dropped: usize,
 ) -> Result<(usize, usize)> {
     let target = partition_set_iri(&key.prefix, &key.period, &key.partition);
     let stored = read_stored::<SeenSet>(inv, &target).await?;
@@ -503,6 +521,7 @@ async fn store_names(
             SeenSet {
                 period: key.period.clone(),
                 names: BTreeSet::new(),
+                dropped: 0,
             },
             None,
         ),
@@ -519,10 +538,11 @@ async fn store_names(
             added += 1;
         }
     }
-    if added == 0 {
+    if added == 0 && refused == 0 && dropped == 0 {
         return Ok((0, refused));
     }
 
+    set.dropped = set.dropped.saturating_add(dropped).saturating_add(refused);
     let list = partition_periods_iri(&key.prefix, &key.partition);
     let listed = read_stored::<HeldPeriods>(inv, &list).await?;
     let (mut held, held_token) = match listed {
@@ -793,9 +813,10 @@ pub(crate) fn flush(seen: Arc<Seen>) -> AsyncFnEndpoint {
             let mut written = 0;
             let mut failures = Vec::new();
             for (key, names) in seen.snapshot(tenant) {
-                match store_names(inv, &key, &names).await {
+                let dropped = seen.lock().dropped_sets.get(&key).copied().unwrap_or(0);
+                match store_names(inv, &key, &names, dropped).await {
                     Ok((added, refused)) => {
-                        seen.forget(&key, &names);
+                        seen.forget(&key, &names, dropped);
                         seen.add_dropped(tenant, refused);
                         written += added;
                     }
@@ -830,6 +851,178 @@ pub(crate) fn flush(seen: Arc<Seen>) -> AsyncFnEndpoint {
                     .output(TEXT_PLAIN_UTF8),
             ),
     )
+}
+
+/// An offline monthly report of stored sets only; never reads or flushes the buffer.
+/// The caller must administer every namespace in the selected tenant's registry.
+pub fn monthly_report() -> AsyncFnEndpoint {
+    AsyncFnEndpoint::new("monthly-report", |inv: &Invocation<'_>| {
+        Box::pin(async move {
+            let period = bound(inv, "period")?;
+            if !is_period(period) {
+                return Err(Error::InvalidArgument {
+                    name: "period".into(),
+                    detail: format!("{period:?} is not a month: write yyyy-mm, such as 2026-11"),
+                });
+            }
+            let wanted = inv.inline_str("as").unwrap_or(TEXT_PLAIN);
+            if wanted != TEXT_PLAIN && wanted != TEXT_TURTLE {
+                return Err(Error::InvalidArgument {
+                    name: "as".into(),
+                    detail: format!(
+                        "{wanted:?} is not a report format: use text/plain or text/turtle"
+                    ),
+                });
+            }
+            let registry = load(inv).await?;
+            let tenant = tenant_of(inv.capability);
+            let mut body = String::new();
+            for namespace in &registry.namespaces {
+                let prefix = &namespace.prefix;
+                require_admin(&registry, inv.capability, prefix, "reading the count for")?;
+                let mut partitions = vec![
+                    (Partition::Active, "active names"),
+                    (Partition::Miss, "misses"),
+                ];
+                if let crate::registry::Strategy::Redirect { rules, .. } = &namespace.strategy {
+                    let mut matches = BTreeSet::new();
+                    partitions.extend(
+                        rules
+                            .iter()
+                            .filter(|rule| matches.insert(rule.pattern.as_str()))
+                            .map(|rule| {
+                                (
+                                    Partition::Rule(rule.pattern.clone()),
+                                    "names answered by rule",
+                                )
+                            }),
+                    );
+                }
+                let mut dropped = 0usize;
+                for (partition, variable) in partitions {
+                    let target = partition_set_iri(prefix, period, &partition);
+                    let set = read_stored::<SeenSet>(inv, &target)
+                        .await?
+                        .map(|(set, _)| set);
+                    if let Some(set) = &set {
+                        if set.period != period {
+                            return Err(Error::Endpoint(format!(
+                                "name: {target} holds month {:?}, expected {period}",
+                                set.period
+                            )));
+                        }
+                        dropped = dropped.saturating_add(set.dropped);
+                    }
+                    let count = set.map_or(0, |set| set.names.len());
+                    append_monthly_metric(
+                        &mut body,
+                        inv,
+                        prefix,
+                        period,
+                        variable,
+                        count,
+                        match &partition {
+                            Partition::Rule(rule) => Some(rule.as_str()),
+                            _ => None,
+                        },
+                        wanted == TEXT_TURTLE,
+                    )?;
+                }
+                append_monthly_metric(
+                    &mut body,
+                    inv,
+                    prefix,
+                    period,
+                    "dropped names",
+                    dropped,
+                    None,
+                    wanted == TEXT_TURTLE,
+                )?;
+            }
+            if body.is_empty() {
+                body = format!(
+                    "name: tenant {:?} has no namespaces to report for {period}\n",
+                    tenant.unwrap_or("default")
+                );
+                if wanted == TEXT_TURTLE {
+                    body.insert_str(0, "# ");
+                }
+            }
+            Ok(Representation::new(
+                ReprType::new(wanted),
+                body.into_bytes(),
+            ))
+        }) as InvokeFuture<'_>
+    })
+    .with_description(
+        Description::new("monthly-report")
+            .title("Stored monthly counts for every namespace")
+            .action(
+                ActionSpec::new(Verb::Source)
+                    .summary("Read stored active, rule, miss and dropped counts without flushing")
+                    .requires(CAP_ADMIN_ANY)
+                    .input(
+                        ArgSpec::new("period")
+                            .summary("the month, as yyyy-mm")
+                            .binding()
+                            .class(XSD_STRING),
+                    )
+                    .input(
+                        ArgSpec::new("as")
+                            .summary("text/plain or text/turtle")
+                            .default_value(TEXT_PLAIN)
+                            .optional()
+                            .class(XSD_STRING),
+                    )
+                    .output(TEXT_PLAIN)
+                    .output(TEXT_TURTLE),
+            ),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_monthly_metric(
+    body: &mut String,
+    inv: &Invocation<'_>,
+    prefix: &str,
+    period: &str,
+    variable: &str,
+    count: usize,
+    rule: Option<&str>,
+    turtle: bool,
+) -> Result<()> {
+    let tenant = tenant_of(inv.capability);
+    if !turtle {
+        body.push_str(&format!(
+            "month: {period}\ttenant: {}\tnamespace: {prefix:?}\t{variable}: {count}",
+            tenant.map_or_else(|| "default".to_string(), |host| format!("{host:?}"))
+        ));
+        if let Some(rule) = rule {
+            body.push_str(&format!("\trule: {rule:?}"));
+        }
+        body.push('\n');
+        return Ok(());
+    }
+    let iri = format!(
+        "urn:name:monthly-report:{}:{period}:{}:{}:{}",
+        encode_key(tenant.unwrap_or("")),
+        encode_key(prefix),
+        encode_key(variable),
+        encode_key(rule.unwrap_or(""))
+    );
+    let answer = observation(&iri, prefix, period, count, variable)?;
+    body.push_str(std::str::from_utf8(&answer.bytes).expect("observation writes UTF-8"));
+    for (predicate, value) in [
+        ("schema:spatialCoverage", tenant),
+        ("schema:description", rule),
+    ] {
+        if let Some(value) = value {
+            let value =
+                serde_json::to_string(value).map_err(|e| Error::Endpoint(format!("name: {e}")))?;
+            body.push_str(&format!("<{iri}> {predicate} {value} .\n"));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

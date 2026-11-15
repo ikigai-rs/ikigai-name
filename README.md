@@ -816,9 +816,10 @@ Rule and miss sets use the same store. Their keys are
 `-stat:{encoded-prefix}:miss:period:{yyyy-mm}`; omit the `:period:` suffix and month
 for the period index. The reserved `-` keeps these separate from namespace keys.
 Encode every byte except ASCII letters, digits and `-._~` as `%HH` in the prefix
-and match. Each set still holds only `period` and `names`; each index holds only
-`periods`. All partitions use the same name-length, stored-set and shared buffer
-ceilings. The flush's stored and dropped numbers count memberships across partitions,
+and match. Each set holds `period`, `names` and the cumulative `dropped` membership count;
+each index holds only `periods`. Older sets without `dropped` read as zero recorded
+drops; drops logged before this field was introduced cannot be recovered. All
+partitions use the same name-length, stored-set and shared buffer ceilings. The flush's stored and dropped numbers count memberships across partitions,
 so one name can contribute to more than one.
 
 `space()` holds the buffer, so the counted faces are the ones it binds, `doc` at
@@ -835,12 +836,38 @@ holds it. Without the flag the server has no clock, makes no directory, and is e
 the read-only server it was.
 
 **The counts are not routed.** Their reader is an administrator, and this server has
-no authenticated transport, the same reason administration is absent. On a server, read
-them from `seen/`, or through a host that embeds the module:
+no authenticated transport, the same reason administration is absent. On the server,
+print a month's stored counts through the kernel:
 
 ```sh
-jq '.names | length' /srv/namespaces/seen/resmud.2026-11.json
+ikigai-name-server --root /srv/namespaces --report 2026-11
+ikigai-name-server --root /srv/namespaces --report 2026-11 --as text/turtle
+ikigai-name-server --root /srv/namespaces --tenant iriref.org --tenant urnid.org --report 2026-11
 ```
+
+`--report MONTH` exits after reading, opens no listener, starts no timers or git
+clients, and grants no filesystem writes, even with `--count-names` or `--git`.
+It reads the registry and stored sets through kernel Sources, without a clock or
+buffered names. Use the same `--registry` and repeated `--tenant` flags as serving.
+Do not combine it with `--check`.
+
+Every configured tenant and namespace (including private and retired namespaces)
+is labeled with its month, active names, misses, each currently configured redirect
+rule's count and total recorded dropped memberships across those partitions. Missing
+sets answer zero; an empty registry says it has no namespaces. A missing or corrupt
+registry or unreadable/corrupt set fails the command without partial stdout. Rules
+removed from the current registry are outside this report. Drops count rejected
+membership attempts, not distinct names: a name may contribute to both the active
+and rule partitions. Historical drops from older sets without `dropped` are unknown
+and contribute zero recorded drops.
+
+Text labels every metric and quotes namespace and rule text. Turtle uses the same
+`schema:Observation`, `schema:observationAbout`, `schema:variableMeasured`,
+`schema:value` and `dcterms:temporal` (`xsd:gYearMonth`) terms as the count faces,
+with `schema:spatialCoverage` for a tenant and `schema:description` for the rule
+match. Each tenant, namespace, month and metric has a distinct subject. Embedded
+hosts can bind `stat::monthly_report()` at `stat::MONTHLY_REPORT_TEMPLATE`; callers
+must administer every namespace in the tenant.
 
 A prefix's `/` is written `~2F` in the file's name. Two processes must not count into
 one directory: the file binding's compare and replace are two steps, safe only because
@@ -925,6 +952,8 @@ feature adds the secret store, an HTTP client and the validator, and nothing els
 | `--listen ADDR` | `127.0.0.1:8080` | address to bind |
 | `--root DIR` | `.` | directory `urn:file:*` resolves within, and the jail |
 | `--registry NAME` | `registry.json` | the registry file within `--root` |
+| `--report MONTH` | off | print stored counts for every configured tenant and namespace, then exit without listening or writing |
+| `--as TYPE` | `text/plain` | with `--report`, output `text/plain` or `text/turtle` |
 | `--check` | off | validate the registry and read every hosted or mirrored document under its size ceiling, then exit without listening or writing |
 | `--cache-files` | off | cache file reads; see [Cacheability](#cacheability) |
 | `--tenant HOST` | none | answer for `HOST` from `--root/HOST`, and refuse any host not named; repeatable. See [Tenants by host](#tenants-by-host) |
