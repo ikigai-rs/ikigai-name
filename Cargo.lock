@@ -1268,7 +1268,10 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "getrandom 0.3.4",
  "oxiri",
+ "oxrdf",
+ "oxttl",
  "serde",
  "serde_json",
 ]
@@ -1392,6 +1395,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ikigai-sexpr"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfdb71d2676555505d481adc862922264b49d3aa754191f526c8a1b2eee5de44"
+dependencies = [
+ "async-trait",
+ "getrandom 0.3.4",
+ "ikigai-core",
+]
+
+[[package]]
 name = "ikigai-shacl"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1426,12 +1440,18 @@ dependencies = [
 
 [[package]]
 name = "ikigai-ui"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b394ecf4463036b68d2aabdd30ea6d811ffee59c3289edefec4ccbf3860de5df"
+checksum = "f40b1f2a4b40615f4a1ff5cdfd7781c135e90d484b7a0abfea64d2d0fcb3b511"
 dependencies = [
+ "chrono",
+ "ikigai-a11y",
  "ikigai-core",
  "ikigai-fn",
+ "ikigai-sexpr",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
