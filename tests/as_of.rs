@@ -1,16 +1,17 @@
 //! As-of resolution over a real git history.
 //!
 //! A scratch repository with three dated commits, read through the real
-//! `urn:repo:log` from `ikigai-repo`. `urn:repo:show` is a stand-in that runs
-//! `git show`, because no `ikigai-repo` release serves that resource yet; its
-//! contract is in `ikigai_name::history`.
+//! `urn:repo:log` from `ikigai-repo`. Most tests read files through a stand-in
+//! `urn:repo:show` that runs `git show` and counts its reads, so a test can tell a
+//! past answer from a cached one; its contract is in `ikigai_name::history`. The
+//! capability tests at the end use `ikigai-repo`'s own `urn:repo:show`.
 
 use futures::executor::block_on;
 use ikigai_core::{
     ArgRef, Capability, Description, EndpointSpace, Error, Exact, FnEndpoint, Invocation, Iri,
     Kernel, ReprType, Representation, Request, Result, Verb,
 };
-use ikigai_name::history::SHOW_IRI;
+use ikigai_name::history::{LOG_IRI, SHOW_IRI};
 use ikigai_name::{repo_history, HISTORY_IRI, REGISTRY_IRI};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -492,13 +493,13 @@ fn a_past_answer_comes_from_history_and_never_the_cache() {
     );
 }
 
-/// `urn:repo:show` is the part `ikigai-repo` does not serve yet, so a host that
-/// binds `repo_history` without it gets told, rather than an unexplained miss.
+/// A host that binds `repo_history` without the `urn:repo:*` resources it reads
+/// through gets told which one, rather than an unexplained miss.
 #[test]
 fn a_missing_repo_resource_is_named() {
     let repo = Repo::new();
     let dir = repo.root.to_str().unwrap().to_string();
-    let space = ikigai_repo::space_with_roots([&repo.root])
+    let space = EndpointSpace::new()
         .bind(
             Exact::new("urn:name:registry"),
             ikigai_name::registry_endpoint(),
@@ -507,9 +508,92 @@ fn a_missing_repo_resource_is_named() {
     let kernel = Kernel::new(Arc::new(space));
     let err = get(&kernel, "urn:name:registry", &[("as-of", "2026-02-01")]).unwrap_err();
     assert!(
-        matches!(&err, Error::Unsupported { detail, .. } if detail.contains(SHOW_IRI)),
+        matches!(&err, Error::Unsupported { detail, .. } if detail.contains(LOG_IRI)),
         "{err:?}"
     );
+}
+
+/// `repo_history` over a stock `ikigai-repo` alone: its real `urn:repo:log` and
+/// `urn:repo:show`, nothing standing in for either. Today's registry is bound too,
+/// because a past document is still held to today's limits.
+fn stock_kernel(repo: &Repo) -> Kernel {
+    let dir = repo.root.to_str().unwrap().to_string();
+    let space = ikigai_repo::space_with_roots([&repo.root])
+        .bind(
+            Exact::new("urn:name:registry"),
+            ikigai_name::registry_endpoint(),
+        )
+        .bind(Exact::new("urn:name:document"), ikigai_name::document())
+        .bind(Exact::new(HISTORY_IRI), repo_history(dir, "registry.json"))
+        .bind(
+            Exact::new(REGISTRY_IRI),
+            current(repo.root.join("registry.json"), "application/json"),
+        );
+    Kernel::new(Arc::new(space))
+}
+
+fn get_under(
+    kernel: &Kernel,
+    target: &str,
+    args: &[(&str, &str)],
+    scopes: &[&str],
+) -> Result<Representation> {
+    let mut request = Request::new(Verb::Source, Iri::parse(target).unwrap());
+    for (name, value) in args {
+        request = request.with_arg(*name, ArgRef::Inline(value.as_bytes().to_vec()));
+    }
+    block_on(kernel.issue(request, &Capability::scoped(scopes.iter().copied())))
+}
+
+/// `ikigai-repo` 0.6.0's read scope is the whole grant a past read needs: the
+/// registry and a document, each as it stood, under exactly `urn:cap:exec:read:git`.
+/// `urn:repo:log` and `urn:repo:show` read nothing outside `git`, so no filesystem
+/// scope is needed beside it.
+#[test]
+fn history_reads_under_exactly_the_git_read_scope() {
+    let repo = Repo::new();
+    let kernel = stock_kernel(&repo);
+    let scopes = ["urn:cap:exec:read:git"];
+
+    let registry = get_under(
+        &kernel,
+        "urn:name:registry",
+        &[("as-of", "2026-02-01")],
+        &scopes,
+    )
+    .unwrap();
+    let registry = text(&registry);
+    assert!(registry.contains("\"legacy\""), "{registry}");
+    assert!(!registry.contains("\"later\""), "{registry}");
+
+    let document = get_under(
+        &kernel,
+        "urn:name:document",
+        &[("path", "resmud/core"), ("as-of", "2026-02-01")],
+        &scopes,
+    )
+    .unwrap();
+    assert_eq!(text(&document), "# version 1\n");
+}
+
+/// The pre-0.6.0 spellings grant nothing, alone or together.
+#[test]
+fn history_is_refused_under_the_old_exec_scopes() {
+    let repo = Repo::new();
+    let kernel = stock_kernel(&repo);
+    for scopes in [
+        &["urn:cap:exec:git"][..],
+        &["urn:cap:exec:git", "urn:cap:exec:gh"][..],
+    ] {
+        let err = get_under(
+            &kernel,
+            "urn:name:registry",
+            &[("as-of", "2026-02-01")],
+            scopes,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Denied(_)), "{scopes:?}: {err:?}");
+    }
 }
 
 /// The git facades are capability-gated, and a past read is no way around that.

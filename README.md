@@ -531,9 +531,10 @@ here, so its correctness cannot depend on eviction.
 | any past answer | a binding at `urn:name:history-source`, taking `source` and `as-of` |
 | `repo_history(dir, registry_file)`, the binding over git | `urn:repo:log`, and `urn:repo:show` |
 
-**This is not usable from a stock `ikigai-repo` yet.** `urn:repo:log` picks the
-commit, but no release serves a file at a commit, so a host using `repo_history`
-must bind `urn:repo:show` itself, to the contract in
+**A stock `ikigai-repo` serves both**, from 0.5.0: `urn:repo:log` picks the
+commit and `urn:repo:show` reads the file at it. From 0.6.0 both require
+`urn:cap:exec:read:git`, so the capability a past read runs under must grant that;
+the old `urn:cap:exec:git` grants nothing. The contract is in
 [`src/history.rs`](src/history.rs).
 
 **The standalone server binds no history**, so it answers `as-of` with `501` and a
@@ -1161,8 +1162,9 @@ or `cargo install --locked ikigai-name --features server` for the standalone
 `ikigai-name-server` binary. Running the `server` feature needs a directory holding `registry.json` and the documents it
 points at; embedded, a host binds `ikigai_name::space()` and nothing else.
 
-**Built but not yet servable as it stands:** [as-of resolution](#as-of-a-date),
-which needs a file-at-a-commit resource from `ikigai-repo`. Over HTTP, the
+**Built but not served by the standalone server:** [as-of resolution](#as-of-a-date),
+which an embedding host can bind over `ikigai-repo` but the server does not, since it
+links no exec module. Over HTTP, the
 [active-name counts](#active-names) and a repository's status, which need an authenticated
 transport.
 
