@@ -28,13 +28,16 @@
 //! question about March would be a wrong answer that looks right.
 //!
 //! [`repo_history`] is the binding over git, composed from `urn:repo:*` resources
-//! through the kernel. It needs two:
+//! through the kernel. It needs two, both served by `ikigai-repo` (0.5.0 onward):
 //!
-//! - [`LOG_IRI`], served by `ikigai-repo` today, picks the commit.
-//! - [`SHOW_IRI`] reads a file at that commit. **No `ikigai-repo` release serves
-//!   it yet**, so a host must bind it until one does: it takes `dir`, `rev` (a full
-//!   commit hash) and `path` (relative to the repository root), answers the file's
-//!   bytes, and answers [`Error::NotFound`] when the path is absent at that commit.
+//! - [`LOG_IRI`] picks the commit.
+//! - [`SHOW_IRI`] reads a file at that commit: it takes `dir`, `rev` (a full commit
+//!   hash) and `path` (relative to the repository root), answers the file's bytes,
+//!   and answers [`Error::NotFound`] when the path is absent at that commit.
+//!
+//! From `ikigai-repo` 0.6.0, both require `urn:cap:exec:read:git`; the older
+//! `urn:cap:exec:git` grants nothing. A host may bind either itself instead, to
+//! the same contract.
 //!
 //! ## Which commit is "at that date"
 //!
@@ -58,8 +61,7 @@ pub const HISTORY_IRI: &str = "urn:name:history-source";
 /// The commits touching a path, from `ikigai-repo`.
 pub const LOG_IRI: &str = "urn:repo:log";
 
-/// A file at a commit. Not yet served by `ikigai-repo`; see the
-/// [module documentation](self).
+/// A file at a commit, from `ikigai-repo` (0.5.0 onward).
 pub const SHOW_IRI: &str = "urn:repo:show";
 
 /// The argument every as-of face takes.
@@ -177,11 +179,9 @@ struct LogEntry {
 /// `dir` is the repository's root, and `registry_file` is the registry's path
 /// within it. A `urn:file:` source names its path relative to that root; any other
 /// source has no history here and is refused. The caller's capability must grant
-/// `urn:cap:exec:git`, and `dir` must be inside the roots the host gave `ikigai-repo`.
-/// History is read from the repository's `HEAD`.
-///
-/// **[`SHOW_IRI`] must be bound as well**, because no `ikigai-repo` release serves it
-/// yet; see the [module documentation](self).
+/// `urn:cap:exec:read:git` (the spelling since `ikigai-repo` 0.6.0; the old
+/// `urn:cap:exec:git` grants nothing), and `dir` must be inside the roots the host
+/// gave `ikigai-repo`. History is read from the repository's `HEAD`.
 pub fn repo_history(dir: impl Into<String>, registry_file: impl Into<String>) -> AsyncFnEndpoint {
     let dir = dir.into();
     let registry_file = registry_file.into();

@@ -118,9 +118,12 @@ futures = "0.3"
 ikigai-conformance = "0.14.0"
 # Match the server's real SPARQL engine for the conformance walk.
 ikigai-sparql = "0.5.0"
-# The real urn:repo:log behind as-of resolution, over a scratch repository.
-# 0.4.0 is its core-0.3 floor; the caret is also a ceiling of <0.5.0.
-ikigai-repo = "0.4.0"
+# The real urn:repo:log and urn:repo:show behind as-of resolution, over a scratch
+# repository. 0.6.0 is the exec split (ledger #3818): its git facades require
+# `urn:cap:exec:read:git` (and its pr:* facades `urn:cap:exec:read:gh`), and the old
+# `urn:cap:exec:git` / `urn:cap:exec:gh` grant nothing. It is still on core 0.3, as
+# 0.4.0 was; the caret is also a ceiling of <0.7.0.
+ikigai-repo = "0.6.0"
 # The real validator and secret store behind a repository-backed namespace, each on the
 # core-0.3 floor used by the optional server dependencies above, with the same
 # caret ceilings. The validator without rudof, which it does not need here:
