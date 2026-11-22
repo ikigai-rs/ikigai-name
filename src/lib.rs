@@ -52,6 +52,7 @@
 #![deny(missing_docs)]
 
 pub mod admin;
+pub mod content;
 pub mod docs;
 pub mod document;
 pub mod git;

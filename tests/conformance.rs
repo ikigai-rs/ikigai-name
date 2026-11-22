@@ -2070,6 +2070,7 @@ fn the_manifold_states_the_contract() {
                 ("names", false),
                 ("documents", false),
                 ("origin", false),
+                ("entries", false),
                 ("owner", false),
             ],
             outputs: TEXT,
@@ -2091,6 +2092,7 @@ fn the_manifold_states_the_contract() {
                 ("names", false),
                 ("documents", false),
                 ("origin", false),
+                ("entries", false),
             ],
             outputs: TEXT,
         },
@@ -2225,10 +2227,10 @@ fn the_manifold_states_the_contract() {
     };
     assert_eq!(
         strategy(CLAIM_IRI, Verb::Sink),
-        ["hosted", "redirect", "mirror"]
+        ["hosted", "redirect", "mirror", "content"]
     );
     assert_eq!(
         strategy(ADMIN_IRI, Verb::Sink),
-        ["hosted", "redirect", "mirror"]
+        ["hosted", "redirect", "mirror", "content"]
     );
 }

@@ -227,6 +227,17 @@ fn strategy_from_args(inv: &Invocation<'_>) -> Result<Strategy> {
         "mirror" => Ok(Strategy::Mirror {
             origin: required(inv, "origin")?,
         }),
+        "content" => Ok(Strategy::Content {
+            entries: serde_json::from_str(&required(inv, "entries")?).map_err(|e| {
+                Error::InvalidArgument {
+                    name: "entries".into(),
+                    detail: format!(
+                        "write a JSON object from each name to {{\"cid\": …}}, with an \
+                         optional \"media-type\": {e}"
+                    ),
+                }
+            })?,
+        }),
         // Retirement is reached through Delete, never by setting a strategy —
         // so it cannot be arrived at by a typo in an ordinary update.
         "retired" => Err(Error::InvalidArgument {
@@ -235,9 +246,20 @@ fn strategy_from_args(inv: &Invocation<'_>) -> Result<Strategy> {
         }),
         other => Err(Error::InvalidArgument {
             name: "strategy".into(),
-            detail: format!("unknown strategy {other:?} (hosted, redirect, mirror)"),
+            detail: format!("unknown strategy {other:?} (hosted, redirect, mirror, content)"),
         }),
     }
+}
+
+/// The `entries` of a content namespace.
+fn entries_spec() -> ArgSpec {
+    ArgSpec::new("entries")
+        .summary(
+            "content: a JSON object from each full name to {\"cid\": …}, with an optional \
+             \"media-type\"",
+        )
+        .optional()
+        .class(XSD_STRING)
 }
 
 /// The optional `status` of a redirect. Absent means the default, because setting a
@@ -352,6 +374,10 @@ fn claim_error(prefix: &str, error: ClaimError) -> Error {
             name: "status".into(),
             detail: format!("the namespace {prefix:?}: {bad}"),
         },
+        bad @ ClaimError::BadContent(_) => Error::InvalidArgument {
+            name: "entries".into(),
+            detail: format!("the namespace {prefix:?}: {bad}"),
+        },
         bad @ ClaimError::BadNames(_) => Error::InvalidArgument {
             name: "names".into(),
             detail: format!("the namespace {prefix:?}: {bad}"),
@@ -433,7 +459,7 @@ pub fn claim() -> AsyncFnEndpoint {
                     .input(
                         ArgSpec::new("strategy")
                             .summary("how it resolves")
-                            .one_of(["hosted", "redirect", "mirror"])
+                            .one_of(["hosted", "redirect", "mirror", "content"])
                             .class(XSD_STRING),
                     )
                     .input(
@@ -459,6 +485,7 @@ pub fn claim() -> AsyncFnEndpoint {
                             .optional()
                             .class(XSD_STRING),
                     )
+                    .input(entries_spec())
                     .input(
                         ArgSpec::new("owner")
                             .summary(
@@ -526,7 +553,7 @@ pub fn admin() -> AsyncFnEndpoint {
                     .input(
                         ArgSpec::new("strategy")
                             .summary("how it should resolve from now on")
-                            .one_of(["hosted", "redirect", "mirror"])
+                            .one_of(["hosted", "redirect", "mirror", "content"])
                             .class(XSD_STRING),
                     )
                     .input(
@@ -552,6 +579,7 @@ pub fn admin() -> AsyncFnEndpoint {
                             .optional()
                             .class(XSD_STRING),
                     )
+                    .input(entries_spec())
                     .output(TEXT_PLAIN_UTF8),
             )
             .action(

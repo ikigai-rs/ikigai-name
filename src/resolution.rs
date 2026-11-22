@@ -71,9 +71,9 @@ name:canonical a rdf:Property ; rdfs:domain name:Resolution ;
 name:claim a rdf:Property ; rdfs:domain name:Resolution ;
     rdfs:label "claim" ; rdfs:comment "The prefix of the one claim containing the name." .
 name:strategy a rdf:Property ; rdfs:domain name:Resolution ;
-    rdfs:label "strategy" ; rdfs:comment "How the claim answers: hosted, redirect or mirror." .
+    rdfs:label "strategy" ; rdfs:comment "How the claim answers: hosted, redirect, mirror or content." .
 name:target a rdf:Property ; rdfs:domain name:Resolution ;
-    rdfs:label "target" ; rdfs:comment "Where the name resolves: a hosted source, a mirror's origin, or where a redirect sends it." .
+    rdfs:label "target" ; rdfs:comment "Where the name resolves: a hosted source, a mirror's origin, where a redirect sends it, or content's ipfs: address." .
 name:status a rdf:Property ; rdfs:domain name:Resolution ;
     rdfs:label "status" ; rdfs:comment "For a redirect, the HTTP status it answers with." .
 name:rule a rdf:Property ; rdfs:domain name:Resolution ;
@@ -82,6 +82,12 @@ name:tenant a rdf:Property ; rdfs:domain name:Resolution ;
     rdfs:label "tenant" ; rdfs:comment "The host the name was resolved for." .
 name:asOf a rdf:Property ; rdfs:domain name:Resolution ;
     rdfs:label "as of" ; rdfs:comment "The instant the name was resolved as of, in UTC." .
+name:cid a rdf:Property ; rdfs:domain name:Resolution ;
+    rdfs:label "CID" ; rdfs:comment "For content, the content identifier, as a lowercase base32 CIDv1." .
+name:gateway a rdf:Property ; rdfs:domain name:Resolution ;
+    rdfs:label "gateway" ; rdfs:comment "For public content, where the tenant's HTTPS gateway serves it: a retrieval hint, not its identity." .
+name:mediaType a rdf:Property ; rdfs:domain name:Resolution ;
+    rdfs:label "media type" ; rdfs:comment "For content, the media type its owner declares." .
 "#;
 
 /// What one name resolves to.
@@ -94,10 +100,10 @@ pub struct Resolution {
     pub canonical: String,
     /// The prefix of the claim containing it.
     pub claim: String,
-    /// `hosted`, `redirect` or `mirror`.
+    /// `hosted`, `redirect`, `mirror` or `content`.
     pub strategy: &'static str,
     /// Where it resolves: the source a hosted namespace is read from, a mirror's
-    /// origin, or where a redirect sends it.
+    /// origin, where a redirect sends it, or `ipfs://<cid>` for content.
     pub target: String,
     /// For a redirect, the status it answers with.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +117,15 @@ pub struct Resolution {
     /// The instant it was resolved as of, in UTC, when it was asked about the past.
     #[serde(rename = "as-of", skip_serializing_if = "Option::is_none")]
     pub as_of: Option<String>,
+    /// For content, its CID as lowercase base32 CIDv1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cid: Option<String>,
+    /// For content in a public claim, where the tenant's gateway serves it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
+    /// For content, the media type its owner declares, if one does.
+    #[serde(rename = "media-type", skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
 }
 
 impl Resolution {
@@ -162,6 +177,15 @@ impl Resolution {
                     literal(at)
                 ),
             );
+        }
+        if let Some(cid) = &self.cid {
+            field("cid", literal(cid));
+        }
+        if let Some(gateway) = &self.gateway {
+            field("gateway", iri_ref(gateway));
+        }
+        if let Some(media_type) = &self.media_type {
+            field("mediaType", literal(media_type));
         }
         out.push_str(" .\n");
         out
@@ -239,14 +263,63 @@ pub(crate) fn answer<'r>(
     }
 }
 
-/// The resolution of `name` under `namespace`, which claims it.
+/// What a content namespace answers for `name`: its canonical CID and the declared
+/// media type, or the miss within the claim when it holds no such entry.
+pub(crate) fn content_of(
+    namespace: &Namespace,
+    name: &str,
+    at: Option<&AsOf>,
+) -> Result<Option<(String, Option<String>)>> {
+    let Strategy::Content { entries } = &namespace.strategy else {
+        return Ok(None);
+    };
+    let entry = entries.get(name).ok_or_else(|| {
+        Error::NotFound(format!(
+            "name: {name:?} is not a name of the content namespace {:?}{}",
+            namespace.prefix,
+            when(at)
+        ))
+    })?;
+    let cid = crate::content::canonical_cid(&entry.cid)
+        .map_err(|why| Error::Endpoint(format!("name: {name:?} {why}")))?;
+    Ok(Some((cid, entry.media_type.clone())))
+}
+
+/// The gateway hint for `cid` under `namespace`: only for a public claim, and only when
+/// the registry names a gateway.
+pub(crate) fn gateway_hint(
+    namespace: &Namespace,
+    gateway: Option<&str>,
+    cid: &str,
+) -> Option<String> {
+    gateway
+        .filter(|_| namespace.public)
+        .map(|gateway| crate::content::gateway_url(gateway, cid))
+}
+
+/// The resolution of `name` under `namespace`, which claims it, in a registry naming
+/// `gateway` as its IPFS gateway, if it names one.
 pub(crate) fn resolution(
     namespace: &Namespace,
     name: &str,
     tenant: Option<&str>,
     at: Option<&AsOf>,
+    gateway: Option<&str>,
 ) -> Result<Resolution> {
+    let mut content = (None, None, None);
     let (target, status, rule) = match &namespace.strategy {
+        Strategy::Content { .. } => {
+            let (cid, media_type) = content_of(namespace, name, at)?.ok_or_else(|| {
+                Error::Endpoint("name: a content namespace named no content".into())
+            })?;
+            let target = format!("ipfs://{cid}");
+            content = (
+                gateway_hint(namespace, gateway, &cid),
+                media_type,
+                Some(cid),
+            );
+            (target, None, None)
+        }
         Strategy::Hosted { source, .. } => (source.clone(), None, None),
         Strategy::Mirror { origin } => (origin.clone(), None, None),
         Strategy::Redirect { .. } => {
@@ -285,6 +358,9 @@ pub(crate) fn resolution(
         rule,
         tenant: tenant.map(str::to_string),
         as_of: at.map(ToString::to_string),
+        gateway: content.0,
+        media_type: content.1,
+        cid: content.2,
     })
 }
 
@@ -545,7 +621,13 @@ pub(crate) async fn resolve_in(
             )
             .await?;
             stat::note_redirect(seen, inv, at.as_ref(), namespace, name);
-            let found = resolution(namespace, name, tenant_of(inv.capability), at.as_ref())?;
+            let found = resolution(
+                namespace,
+                name,
+                tenant_of(inv.capability),
+                at.as_ref(),
+                registry.gateway.as_deref(),
+            )?;
             // The kernel clamps to the registry's expiry, and in terms mode
             // also tracks the vocabulary read by the membership check above.
             // Read from history every time when it is about the past.
@@ -667,8 +749,14 @@ mod tests {
         .expect("loads");
         let at = parse_as_of("2026-03-31").expect("a date");
         let namespace = registry.lookup("urn:urnid:acme:a").expect("claimed");
-        let found = resolution(namespace, "urn:urnid:acme:a", Some("urnid.org"), Some(&at))
-            .expect("resolves");
+        let found = resolution(
+            namespace,
+            "urn:urnid:acme:a",
+            Some("urnid.org"),
+            Some(&at),
+            None,
+        )
+        .expect("resolves");
         assert_eq!(found.as_of.as_deref(), Some("2026-03-31T23:59:59Z"));
         assert_eq!(found.tenant.as_deref(), Some("urnid.org"));
         let turtle = found.turtle();

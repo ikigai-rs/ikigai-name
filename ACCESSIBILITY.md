@@ -40,7 +40,11 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   what would (`"x" cannot administer a namespace: an owner is a capability that begins
   `urn:cap:name:admin:` and goes on to name something, such as `urn:cap:name:admin:staff`; leave
   it out to use the namespace's own`). A refusal to administer names the capability the registry
-  records as its owner.
+  records as its owner. A `content` name answers no document without a gateway, and says
+  where its record is (`name: "x" names the IPFS content ipfs://<cid>, and this host serves no
+  bytes for it; read its resolution at urn:name:resolution:iri:x`); a content entry refused at
+  load names the entry and why (`its entry "x" is not a name under "p"`, `its entries "a" and
+  "b" are one name, "a"`).
 - **Plain-text and JSON answers**: `urn:name:resolve` answers a strategy and its source,
   separated by a tab (`hosted`, then `urn:file:…`), and for a redirect its target, its status and
   the match of the rule that answered, if one did (`redirect`, `https://…`, `302`, `old/{x}`);
