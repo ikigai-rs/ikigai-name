@@ -73,6 +73,25 @@ bytes into a CID only where their meaning matches the block the CID names.
 A CID can be computed without making any bytes available. Publish a usable
 reference only after a known provider can return the expected content.
 
+### Adapter interoperability evidence (2026-11-22)
+
+The [offline vectors](../../tests/ipfs_vectors.rs) check the exact digest bytes,
+CIDv1 codec and multihash, and canonical base32 CID. Git 2.54.0 supplied the
+object IDs for a `hello` blob in SHA-1 and SHA-256 repositories. The raw-block
+vectors cover the empty block and the five bytes of `hello`. The empty digest
+matches the [BLAKE3 reference vectors](https://github.com/BLAKE3-team/BLAKE3/blob/master/test_vectors/test_vectors.json).
+The tests use
+`cid` 0.11.3 and its `multihash` re-export for CID encoding and parsing.
+
+| Form | Offline vector | IPFS read and pin | Recommendation |
+| --- | --- | --- | --- |
+| Git `git-raw` with SHA-1 | Pass | Unmeasured | Wait for an exact-block provider before exposing legacy metadata. Keep SHA-1 excluded from verified delivery and snapshot roots. |
+| Git `git-raw` with SHA-256 | Pass | Unmeasured | Wait for exact-block retrieval, Git decoding, and pinning evidence. |
+| `raw` with BLAKE3 | Pass | Unmeasured | Wait for the intended reader and pinner to handle the draft multihash code and for exact-block import limits to be confirmed. |
+
+No IPFS reader or pinner was installed on the test host. The offline checks
+establish the CID mapping. Both adapters remain disabled.
+
 ## Read-only off-ramp
 
 Use a versioned public registry snapshot plus one immutable export per owner

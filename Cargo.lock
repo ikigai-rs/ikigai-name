@@ -1391,9 +1391,11 @@ name = "ikigai-name"
 version = "0.8.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "cid",
  "futures",
  "futures-util",
+ "hex",
  "hmac",
  "ikigai-a11y",
  "ikigai-conformance",
@@ -1413,6 +1415,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha1",
  "sha2 0.10.9",
  "tokio",
 ]

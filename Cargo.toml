@@ -136,3 +136,7 @@ ikigai-shacl = { version = "0.6.0", default-features = false }
 ikigai-secret = "0.4.0"
 # forge_reader's own tests, over a canned transport.
 ikigai-http = "0.6.0"
+# Offline IPFS interoperability vectors only (cid itself is a normal dependency).
+blake3 = "1.8"
+hex = "0.4"
+sha1 = "0.11"
