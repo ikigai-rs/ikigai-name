@@ -436,6 +436,38 @@ fn a_past_answer_uses_the_status_and_rules_held_then() {
     );
 }
 
+/// The ceiling is this deployment's today, whatever a past file allowed, for the
+/// resolution as for the document: a terms-mode resolution as of a date reads the
+/// past vocabulary to check membership, and is held to today's limit when it does.
+#[test]
+fn a_past_resolution_is_held_to_todays_ceiling() {
+    let repo = Repo::new();
+    let terms = r#"{"prefix":"terms","owner":"urn:cap:name:admin:terms",
+        "strategy":"hosted","source":"urn:file:vocab/terms.ttl","names":"terms"}"#;
+    repo.write(
+        "vocab/terms.ttl",
+        "<https://example.org/terms/Thing> a <http://www.w3.org/2000/01/rdf-schema#Class> .\n",
+    );
+    repo.write("registry.json", &registry(&[terms]));
+    repo.commit("2026-06-10T12:00:00Z");
+    repo.write(
+        "registry.json",
+        &format!(r#"{{"namespaces":[{terms}],"limits":{{"max_document_bytes":64}}}}"#),
+    );
+    repo.commit("2026-07-10T12:00:00Z");
+    let (kernel, _) = repo.kernel();
+    let past = [("path", "terms/Thing"), ("as-of", "2026-06-20")];
+
+    let document = get(&kernel, "urn:name:document", &past).expect_err("over today's ceiling");
+    let resolved = get(&kernel, "urn:name:resolve", &past).expect_err("over today's ceiling");
+    for err in [document, resolved] {
+        assert!(
+            matches!(&err, Error::Endpoint(m) if m.contains("over this host's 64-byte ceiling")),
+            "{err:?}"
+        );
+    }
+}
+
 #[test]
 fn nothing_answers_for_a_date_before_it_existed() {
     let repo = Repo::new();

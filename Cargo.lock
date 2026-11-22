@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "ikigai-name"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "async-trait",
  "blake3",

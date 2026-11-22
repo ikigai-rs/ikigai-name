@@ -272,7 +272,8 @@ registry is already the operator's editing surface and a second config channel
 is a second thing to keep in step. The resolver reads whole documents into
 memory, so an unbounded one is the only way a single request can hurt the host;
 exceeding the ceiling is refused with an error naming the setting that would
-raise it.
+raise it. An answer as of a date is held to today's ceilings, not to the ones the
+file held on that date.
 
 ## Redirects: statuses and rewrite rules
 
