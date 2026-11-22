@@ -530,20 +530,18 @@ pub(crate) async fn resolve_in(
 ) -> Result<Representation> {
     let at = as_of_arg(inv)?;
     let registry = crate::load_at(inv, at.as_ref()).await?;
+    // The ceiling is this deployment's today, whatever a past file allowed, as for the
+    // document (see `crate::document`); which namespace meant what is the past's.
+    let ceiling = match &at {
+        Some(_) => crate::load(inv).await?.limits.max_document_bytes,
+        None => registry.limits.max_document_bytes,
+    };
     match answer(&registry, name, inv.capability, at.as_ref())? {
         Answer::Delegated(upstream) => {
             forward(inv, upstream, name, Face::Resolution, Some(face)).await
         }
         Answer::Claimed(namespace) => {
-            crate::names::check(
-                inv,
-                namespace,
-                name,
-                at.as_ref(),
-                registry.limits.max_document_bytes,
-                seen,
-            )
-            .await?;
+            crate::names::check(inv, namespace, name, at.as_ref(), ceiling, seen).await?;
             stat::note_redirect(seen, inv, at.as_ref(), namespace, name);
             let found = resolution(namespace, name, tenant_of(inv.capability), at.as_ref())?;
             // The kernel clamps to the registry's expiry, and in terms mode
