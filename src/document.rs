@@ -205,10 +205,26 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
             // the gateway is a retrieval hint the tenant may change; anything else is
             // pointed at the resolution record, which says all the resolver knows.
             Strategy::Content { .. } => {
-                let (cid, _) =
-                    resolution::content_of(found, &path, at.as_ref())?.ok_or_else(|| {
+                let (cid, media_type) = resolution::content_of(found, &path, at.as_ref())?
+                    .ok_or_else(|| {
                         Error::Endpoint("name: a content namespace named no content".into())
                     })?;
+                // Opt-in verified delivery (see `crate::delivery`): only when the host
+                // bound a configuration, and only for a public claim, since asking a
+                // gateway for a CID tells it someone wants that content.
+                if found.public {
+                    if let Some(config) = crate::delivery::config(inv).await? {
+                        let delivered =
+                            crate::delivery::deliver(inv, &config, &cid, media_type.as_deref())
+                                .await?;
+                        if at.is_none() {
+                            if let Some(seen) = seen {
+                                seen.note(inv, &prefix, &path);
+                            }
+                        }
+                        return Ok(crate::cacheable_unless_past(delivered, at.as_ref()));
+                    }
+                }
                 let Some(url) = resolution::gateway_hint(found, searched.gateway.as_deref(), &cid)
                 else {
                     return Err(Error::Unsupported {

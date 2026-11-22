@@ -48,11 +48,14 @@
 //! of a date, from the vocabulary's history rather than any cache; see [`history`].
 //! The counts are in [`stat`]. A namespace served from a git repository is in [`git`].
 //! With the `git` build, opt-in host-run redirect target checks are in `target_health`.
+//! Opt-in verified delivery of a content name's bytes from a trustless gateway is in
+//! [`delivery`].
 
 #![deny(missing_docs)]
 
 pub mod admin;
 pub mod content;
+pub mod delivery;
 pub mod docs;
 pub mod document;
 pub mod git;

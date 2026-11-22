@@ -47,6 +47,10 @@ sha2 = "0.10"
 # the multiformats project's own implementation rather than a second one. Its 0.x caret
 # is also a ceiling, <0.12.0.
 cid = "0.11"
+# The unsigned varints framing a CAR and a protobuf, decoded by the multiformats crate
+# `cid` and `multihash` already depend on (the version the lock holds, so no new crate),
+# rather than a private copy. Its 0.x caret is also a ceiling, <0.9.0.
+unsigned-varint = "0.8.0"
 
 # Server-only transports and stores on core 0.3. Web 0.5.0 is the first 0.5
 # release with the redirect/Gone face; its caret excludes 0.6.0.
