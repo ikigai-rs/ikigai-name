@@ -1120,6 +1120,13 @@ Breaking for Rust callers (why this is 0.9.0, not 0.8.1):
   `Health` gains `content`: a struct literal that names every field needs them.
 - New public types `content::ContentEntry` and `content::Entries`; a new dependency on `cid`.
 
+Also new and opt-in: verified content delivery. A host that binds `urn:name:delivery-source` to a
+gateway configuration has `urn:name:document` fetch a public content name from trustless HTTPS gateways,
+through `urn:http:get` under the caller's capability, and serve it only once every byte is verified
+against the CID (raw blocks and CARv1 UnixFS files, with size, depth, block and time limits). Unbound,
+nothing changes; the standalone server binds nothing. A new public module, `delivery`, and a direct
+dependency on `unsigned-varint` (already in the graph). See "Verified content delivery (opt-in)" above.
+
 Also in this release: an as-of resolution (`urn:name:resolve`, `urn:name:resolution`) is held to
 today's document ceiling, as `urn:name:document` already was; before, the same name as of the
 same date could be refused as a document and answered as a resolution. And offline test vectors
