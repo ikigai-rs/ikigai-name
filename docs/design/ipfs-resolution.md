@@ -220,3 +220,5 @@ decoded size, DAG depth, block count and time.
 - **Prototype bounded verified document delivery.** Start with raw blocks and
   add UnixFS CAR traversal after testing malformed responses, wrong roots,
   omitted blocks, unsafe media types and resource limits.
+  Prototyped as the opt-in `src/delivery.rs` (ledger #4045), off unless a host
+  binds `urn:name:delivery-source`, and tested over canned gateway answers.

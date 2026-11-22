@@ -495,6 +495,39 @@ face, so the upstream answers for the same date. Historical answers are never ma
 A host that binds no HTTP client delegates nothing and says so; the standalone server is such
 a host.
 
+### Verified content delivery (opt-in)
+
+A `content` name holds a CID, and by default the resolver fetches nothing for it: its document
+is a redirect to the registry's `gateway` hint, or a refusal pointing at its resolution record.
+A host that binds `urn:name:delivery-source` to a configuration turns on verified delivery for
+public content names:
+
+```json
+{"gateways": ["https://trustless.example", "https://second.example"],
+ "serve": "download",
+ "limits": {"transfer-bytes": 8388608, "decoded-bytes": 8388608, "depth": 32,
+            "blocks": 4096, "millis": 30000}}
+```
+
+`urn:name:document` then asks each [trustless gateway](https://specs.ipfs.tech/http-gateways/trustless-gateway/)
+in turn, through the host's `urn:http:get` and under the caller's capability, which must hold
+`urn:cap:net:<the gateway's host>`; `urn:http:get` checks every redirect hop the same way. A raw
+block is served only when its SHA-256 is the CID's digest. A UnixFS file is read from a CARv1:
+traversal starts at the requested CID, each block it consumes is verified, an iterative
+pre-scan bounds the depth and checks that every linked block is present, and only then is the
+file assembled from its links, in order, served and made cacheable. Every limit has a default
+and its own refusal (`over budget`).
+
+A gateway's wrong bytes (an integrity failure) are kept apart from a gateway that did not
+answer, and either moves on to the next gateway; the refusal names what each one did. An
+unsupported codec, hash, CARv2 or UnixFS directory is refused as unsupported. By default a file
+is served as an attachment, and its declared media type is kept only when it is passive (plain
+text, common images, audio and video, JSON, CSV, Turtle): a declared `text/html` or
+`image/svg+xml` is served as `application/octet-stream`. `"serve": "isolated-origin"` passes the
+declared type through, inline, for a host that serves this face on an origin of its own. A
+private content name is never asked of a gateway. The standalone server binds no delivery
+configuration. The module documentation of `ikigai_name::delivery` has the details.
+
 ### Over HTTP
 
 `/{iri}` resolves on the tenant the `Host` names: `/urn:urnid:acme:Weapon` and

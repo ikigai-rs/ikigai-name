@@ -44,7 +44,14 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   where its record is (`name: "x" names the IPFS content ipfs://<cid>, and this host serves no
   bytes for it; read its resolution at urn:name:resolution:iri:x`); a content entry refused at
   load names the entry and why (`its entry "x" is not a name under "p"`, `its entries "a" and
-  "b" are one name, "a"`).
+  "b" are one name, "a"`). With verified delivery configured, a content name that could not be
+  served names its CID and what each gateway did, in the order they were asked (`name: no
+  configured gateway delivered verified bytes for ipfs://<cid>: https://a… answered bytes that
+  do not verify: the answer omits the block <cid>, so the file is incomplete; https://b… did not
+  answer it: <its failure>`); a limit names its bound (`more than the transfer limit of 1000`,
+  `the time limit of 5000 ms`), and a gateway not asked says what grant it needs (`https://a…
+  was not asked: it needs urn:cap:net:a…`). A bad configuration is named
+  (`name: urn:name:delivery-source is not a valid delivery configuration: …`).
 - **Plain-text and JSON answers**: `urn:name:resolve` answers a strategy and its source,
   separated by a tab (`hosted`, then `urn:file:…`), and for a redirect its target, its status and
   the match of the rule that answered, if one did (`redirect`, `https://…`, `302`, `old/{x}`);
@@ -219,6 +226,7 @@ browser renders it or how assistive technology presents it.
 | Hosted-name membership and mode refusals | Pass | `tests/hosted_names.rs` checks the namespace and valid choices in loader refusals; `tests/server_http.rs`: `restricted_names_return_404_for_every_document_face_and_resolution` checks real HTTP responses. Run on 2026-11-15 with `cargo test --all-features`, rustc 1.99.1. Text and status only; no assistive technology evaluation. |
 | Counts, reports, empty reports, flushes and log refusals | Pass | `tests/active_names.rs`, including `the_report_has_one_line_per_period_held`, `a_bad_period_is_refused_by_name`, `a_failed_write_of_the_seen_set_does_not_fail_the_resolution`; `tests/active_names_http.rs` exercises failed-flush server logging. Rule and miss count output, distinct Turtle variables, administrative access and server persistence are covered by the same suites (2026-11-15, `cargo test --all-features`, rustc 1.99.1). No terminal assistive-technology evaluation. |
 | Redirect target health and timer option refusals | Pass | `tests/target_health.rs` checks labeled JSON, absent and outdated results, owner and tenant isolation, HTTP statuses, and a real per-tenant timer. `tests/server_check.rs` checks option pairing, interval and host refusals, and the plain build refusal. Run on 2026-11-15 with all features and the plain `server` build. Text and structure only; no assistive-technology evaluation. |
+| Verified content delivery refusals and download labeling | Pass | `tests/content_delivery.rs`, including `unavailability_is_not_an_integrity_failure` (each gateway named, integrity kept apart from unavailability), `an_omitted_block_is_an_incomplete_file_and_nothing_is_served`, each limit's test naming its bound, and `an_active_media_type_is_served_as_an_octet_stream_download`. Run on 2026-11-22 with `cargo test --all-features`. Checks emitted words and headers; no assistive-technology evaluation. |
 | Repository status labels, bounded reasons, refresh and webhook refusals | Pass | `src/git.rs`: `the_status_is_one_labeled_line_each`, `a_reason_is_one_bounded_line_with_no_token`; `tests/git_source.rs`, including `the_reason_is_readable_by_the_owner_and_nobody_else`, `a_reader_echoing_the_token_does_not_put_it_in_the_record`; `tests/git_http.rs` exercises the real binary. Checks output and access control, not spoken readability. |
 | Browser rendering, CSP, htmx focus/region/address/title behavior and Apply | Blocked | No current browser session was run. Historical Chromium check on 2026-11-01 ([PR #29](https://github.com/ikigai-rs/ikigai-name/pull/29)) reported no console errors, a preserved live region, focus remaining on the link, updated address/title and working Apply. Browser version and invocation were not recorded here; CI does not repeat it. It predates tenant references ([PR #31](https://github.com/ikigai-rs/ikigai-name/pull/31)). |
 | Automated browser accessibility checker (axe) | Blocked | No current axe run. Historical 2026-11-01 run in PR #29 reported no violations under WCAG 2.0/2.1/2.2 A and AA rules for the list, htmx detail, term page, light/dark/high-contrast themes and emulated `prefers-contrast: more`. axe and Chromium versions and invocation were not recorded here; CI does not repeat it. No JavaScript-off or tenant-reference evaluation. |
