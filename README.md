@@ -1071,6 +1071,27 @@ task and limited to `seen/`, which no request can reach. `--git` adds another, l
   there, and a rule that matches more than one segment below a one-segment prefix
   is reachable through `urn:name:document` and `urn:name:resolve` but not over HTTP.
 
+## 0.9.0 migration
+
+A namespace can resolve names to IPFS content. A registry entry with `"strategy": "content"`
+holds an explicit map from canonical names to a required `cid` and an optional `media-type`;
+the resolution record answers `target: ipfs://<cid>` (canonical base32 CIDv1) with `cid`, an
+optional `gateway` and `media-type`. A registry may name an HTTPS `gateway`, a retrieval hint
+used only for public claims. The resolver fetches nothing. See
+`docs/design/ipfs-resolution.md`.
+
+Breaking for Rust callers (why this is 0.9.0, not 0.8.1):
+- `Strategy` gains `Content`, `ClaimError` gains `BadContent`, and `LoadError` gains `Gateway`:
+  an exhaustive `match` on any of them needs the new arm.
+- `Registry` gains `gateway`, `Resolution` gains `cid`, `gateway` and `media_type`, and
+  `Health` gains `content`: a struct literal that names every field needs them.
+- New public types `content::ContentEntry` and `content::Entries`; a new dependency on `cid`.
+
+Also in this release: an as-of resolution (`urn:name:resolve`, `urn:name:resolution`) is held to
+today's document ceiling, as `urn:name:document` already was; before, the same name as of the
+same date could be refused as a document and answered as a resolution. And offline test vectors
+for Git and BLAKE3 CIDs (no adapter is enabled).
+
 ## 0.8.0 migration
 
 A hosted namespace may say which names it holds. `"names"` in a registry entry is `"any"`
