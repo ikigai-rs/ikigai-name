@@ -299,23 +299,21 @@ pub fn verify_raw(
     Ok(bytes.to_vec())
 }
 
-/// An unsigned LEB128 varint at `*at`, advancing past it. `None` when truncated or longer
-/// than nine bytes (the multiformats bound).
+/// The longest unsigned varint multiformats allows: nine bytes, 63 bits.
+const MAX_VARINT_BYTES: usize = 9;
+
+/// An unsigned varint at `*at`, advancing past it, decoded by `unsigned-varint`. `None`
+/// when truncated, overlong (not minimal) or longer than the multiformats bound. The
+/// crate's `u64` admits a tenth byte, to reach `u64::MAX`, so that bound is checked here.
 fn varint(bytes: &[u8], at: &mut usize) -> Option<u64> {
-    let mut value = 0u64;
-    for i in 0..9 {
-        let byte = *bytes.get(*at)?;
-        *at += 1;
-        value |= u64::from(byte & 0x7f) << (7 * i);
-        if byte & 0x80 == 0 {
-            // A minimal encoding only: a final zero byte after the first is overlong.
-            if i > 0 && byte == 0 {
-                return None;
-            }
-            return Some(value);
-        }
+    let rest = bytes.get(*at..)?;
+    let (value, after) = unsigned_varint::decode::u64(rest).ok()?;
+    let used = rest.len() - after.len();
+    if used > MAX_VARINT_BYTES {
+        return None;
     }
-    None
+    *at += used;
+    Some(value)
 }
 
 /// `n` bytes at `*at`, advancing past them.
@@ -327,6 +325,13 @@ fn take<'a>(bytes: &'a [u8], at: &mut usize, n: u64) -> Option<&'a [u8]> {
     Some(slice)
 }
 
+// The readers below (`cbor_head`, `car_header`, `fields` and the dag-pb and UnixFS
+// readers built on it) are private on purpose: no vetted crate serves. A general CBOR or
+// protobuf decoder recurses into nested items and allocates as it goes, without the
+// bounds the iterative pre-scan relies on for its depth, size and block guarantees. The
+// shapes read here are fixed (a CARv1 header map, a dag-pb node and its links, UnixFS
+// data), so each reader is flat, non-recursive and bounded by the bytes it is given.
+// Varints, CIDs and multihashes are shared: `unsigned-varint` and `cid` decode them.
 /// A CBOR item head: its major type and argument. Indefinite lengths are refused.
 fn cbor_head(bytes: &[u8], at: &mut usize) -> Option<(u8, u64)> {
     let first = *bytes.get(*at)?;
@@ -959,9 +964,44 @@ mod tests {
         let mut at = 0;
         assert_eq!(varint(&[0xac, 0x02], &mut at), Some(300));
         assert_eq!(at, 2);
-        assert_eq!(varint(&[0x80, 0x00], &mut 0), None, "overlong");
-        assert_eq!(varint(&[0x80], &mut 0), None, "truncated");
-        assert_eq!(varint(&[0xff; 10], &mut 0), None, "too long");
+        let mut at = 1;
+        assert_eq!(
+            varint(&[0xff, 0x05, 0x07], &mut at),
+            Some(5),
+            "from an offset"
+        );
+        assert_eq!(at, 2);
+        let mut longest = [0xff; MAX_VARINT_BYTES];
+        longest[MAX_VARINT_BYTES - 1] = 0x7f;
+        assert_eq!(
+            varint(&longest, &mut 0),
+            Some(i64::MAX as u64),
+            "nine bytes"
+        );
+    }
+
+    #[test]
+    fn a_truncated_varint_is_refused() {
+        let mut at = 0;
+        assert_eq!(varint(&[0x80], &mut at), None);
+        assert_eq!(varint(&[0xff, 0xff], &mut at), None);
+        assert_eq!(varint(&[], &mut at), None);
+        assert_eq!(at, 0, "a refusal does not advance");
+    }
+
+    #[test]
+    fn a_varint_longer_than_the_multiformats_bound_is_refused() {
+        // Ten bytes: `unsigned-varint` decodes this as u64::MAX; multiformats stops at nine.
+        let mut ten = [0xff; 10];
+        ten[9] = 0x01;
+        assert_eq!(varint(&ten, &mut 0), None);
+        assert_eq!(varint(&[0xff; 11], &mut 0), None);
+    }
+
+    #[test]
+    fn an_overlong_varint_is_refused() {
+        assert_eq!(varint(&[0x80, 0x00], &mut 0), None);
+        assert_eq!(varint(&[0x81, 0x80, 0x00], &mut 0), None);
     }
 
     #[test]
