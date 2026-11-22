@@ -601,6 +601,15 @@ pub fn docs() -> AsyncFnEndpoint {
                         "name: {prefix:?} is answered by {upstream} — documentation lives there"
                     )))
                 }
+                Strategy::Content { .. } => {
+                    return Err(Error::Unsupported {
+                        verb: None,
+                        detail: format!(
+                            "name: {prefix:?} names IPFS content, which has no documentation \
+                             page; read the resolution of each of its names"
+                        ),
+                    })
+                }
             };
 
             // The host this request is for owns the terms on that host. Any other

@@ -52,6 +52,9 @@ pub struct Health<'a> {
     /// How many are answered by an upstream resolver.
     #[serde(default)]
     pub delegated: usize,
+    /// How many name IPFS content.
+    #[serde(default)]
+    pub content: usize,
     /// The document ceiling in force, in bytes.
     pub max_document_bytes: usize,
     /// Which faces mark their own results cacheable.
@@ -81,6 +84,7 @@ pub fn health() -> AsyncFnEndpoint {
                 mirrored: 0,
                 retired: 0,
                 delegated: 0,
+                content: 0,
                 max_document_bytes: registry.limits.max_document_bytes,
                 cacheable: CACHEABLE_FACES.to_vec(),
             };
@@ -92,6 +96,7 @@ pub fn health() -> AsyncFnEndpoint {
                     Mirror { .. } => report.mirrored += 1,
                     Retired { .. } => report.retired += 1,
                     Delegate { .. } => report.delegated += 1,
+                    Content { .. } => report.content += 1,
                 }
             }
             let body = serde_json::to_vec_pretty(&report)

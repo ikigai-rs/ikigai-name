@@ -200,6 +200,41 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
                     when(at.as_ref())
                 )))
             }
+            // The resolver holds a CID, not bytes, and fetches nothing. A public claim
+            // in a registry naming a gateway sends the caller there, temporarily, since
+            // the gateway is a retrieval hint the tenant may change; anything else is
+            // pointed at the resolution record, which says all the resolver knows.
+            Strategy::Content { .. } => {
+                let (cid, _) =
+                    resolution::content_of(found, &path, at.as_ref())?.ok_or_else(|| {
+                        Error::Endpoint("name: a content namespace named no content".into())
+                    })?;
+                let Some(url) = resolution::gateway_hint(found, searched.gateway.as_deref(), &cid)
+                else {
+                    return Err(Error::Unsupported {
+                        verb: None,
+                        detail: format!(
+                            "name: {path:?} names the IPFS content ipfs://{cid}, and this host \
+                             serves no bytes for it; read its resolution at \
+                             urn:name:resolution:iri:{}",
+                            crate::iri::name_key(&path)
+                        ),
+                    });
+                };
+                if at.is_none() {
+                    if let Some(seen) = seen {
+                        seen.note(inv, &prefix, &path);
+                    }
+                }
+                let redirect = Redirect::new(RedirectStatus::TemporaryRedirect, url.as_str())
+                    .map_err(|e| {
+                        Error::Endpoint(format!(
+                            "name: {prefix:?} has a gateway address {url:?} that is not an \
+                             absolute IRI: {e}"
+                        ))
+                    })?;
+                return Ok(Representation::redirect(redirect));
+            }
             // Answered above, by forwarding.
             Strategy::Delegate { upstream } => {
                 return Err(Error::Endpoint(format!(

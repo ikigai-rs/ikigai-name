@@ -24,6 +24,7 @@
 //! at the first entry the claim rule would have refused. There is one rule,
 //! not a load rule and a claim rule that must be kept in step.
 
+pub use crate::content::{ContentEntry, Entries};
 use crate::git::repository_refusal;
 pub use crate::git::Repository;
 use crate::iri::name_segments;
@@ -106,6 +107,13 @@ pub enum Strategy {
         /// `https://urnid.org/`.
         upstream: String,
     },
+    /// Names that resolve to IPFS content: an explicit map from canonical full names to
+    /// a CID and an optional declared media type. A name it does not hold is a miss
+    /// within the claim. See [`content`](crate::content).
+    Content {
+        /// Each name this namespace answers, and the content it names.
+        entries: Entries,
+    },
 }
 
 impl Strategy {
@@ -117,6 +125,7 @@ impl Strategy {
             Strategy::Mirror { .. } => "mirror",
             Strategy::Retired { .. } => "retired",
             Strategy::Delegate { .. } => "delegate",
+            Strategy::Content { .. } => "content",
         }
     }
 
@@ -252,6 +261,11 @@ pub struct Registry {
     /// written here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unclaimed: Option<Strategy>,
+    /// The HTTPS IPFS gateway this registry's tenant names, if any: where a public
+    /// `content` namespace's answer says its content may be fetched, and where its
+    /// document redirects. A retrieval hint only; it never changes what a name means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
 }
 
 /// Why a claim was refused.
@@ -286,6 +300,8 @@ pub enum ClaimError {
     /// A `delegate` upstream that is not an `http:` or `https:` address with a host.
     /// Carries the upstream as written.
     BadUpstream(String),
+    /// A `content` entry the registry cannot hold. Carries the clause saying why.
+    BadContent(String),
 }
 
 impl std::fmt::Display for ClaimError {
@@ -318,6 +334,7 @@ impl std::fmt::Display for ClaimError {
                 f,
                 "its upstream {upstream:?} is not an https: or http: address with a host"
             ),
+            ClaimError::BadContent(reason) => f.write_str(reason),
         }
     }
 }
@@ -355,6 +372,8 @@ pub enum LoadError {
     /// `unclaimed` named something other than a `delegate` to an upstream with a host.
     /// Carries the clause saying why.
     Unclaimed(String),
+    /// `gateway` was not an `https:` address with a host. Carries the clause saying why.
+    Gateway(String),
     /// An entry the claim rule refuses. `prefix` is the entry that could not be
     /// claimed; for an overlap, `error` names the earlier entry it collides
     /// with, so the refusal names both offending prefixes.
@@ -371,6 +390,7 @@ impl std::fmt::Display for LoadError {
         match self {
             LoadError::Json(e) => write!(f, "not valid registry JSON: {e}"),
             LoadError::Unclaimed(why) => write!(f, "its unclaimed {why}"),
+            LoadError::Gateway(why) => write!(f, "its {why}"),
             LoadError::Refused { prefix, error } => {
                 write!(f, "the namespace {prefix:?} cannot be claimed: {error}")
             }
@@ -382,7 +402,7 @@ impl std::error::Error for LoadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             LoadError::Json(e) => Some(e),
-            LoadError::Refused { .. } | LoadError::Unclaimed(_) => None,
+            LoadError::Refused { .. } | LoadError::Unclaimed(_) | LoadError::Gateway(_) => None,
         }
     }
 }
@@ -398,6 +418,11 @@ impl Namespace {
     /// together with the strategy that serves it.
     pub fn check(&self) -> Result<(), ClaimError> {
         self.strategy.check()?;
+        if let Strategy::Content { entries } = &self.strategy {
+            entries
+                .check(&self.prefix)
+                .map_err(ClaimError::BadContent)?;
+        }
         let Some(repository) = &self.repository else {
             return Ok(());
         };
@@ -458,6 +483,11 @@ fn refuse_by_name(raw: &serde_json::Value) -> Option<LoadError> {
             })
         } else if entry.get("strategy")?.as_str()? == "redirect" {
             redirect_refusal(entry)
+        } else if entry.get("strategy")?.as_str()? == "content" {
+            let entries = entry.get("entries")?;
+            serde_json::from_value::<Entries>(entries.clone())
+                .err()
+                .map(|e| ClaimError::BadContent(format!("its entries are not valid: {e}")))
         } else {
             None
         };
@@ -533,10 +563,18 @@ impl Registry {
                 )))
             }
         }
+        if let Some(why) = parsed
+            .gateway
+            .as_deref()
+            .and_then(crate::content::gateway_refusal)
+        {
+            return Err(LoadError::Gateway(why));
+        }
         let mut registry = Registry {
             namespaces: Vec::with_capacity(parsed.namespaces.len()),
             limits: parsed.limits,
             unclaimed: parsed.unclaimed,
+            gateway: parsed.gateway,
         };
         for namespace in parsed.namespaces {
             let prefix = namespace.prefix.clone();
@@ -1203,6 +1241,7 @@ mod tests {
                 max_document_bytes: 4096,
             },
             unclaimed: None,
+            gateway: None,
         };
         let json = serde_json::to_vec(&reg).expect("serializes");
         assert_eq!(Registry::from_json(&json).expect("loads"), reg);
