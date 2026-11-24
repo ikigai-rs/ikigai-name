@@ -515,3 +515,23 @@ fn restricted_names_return_404_for_every_document_face_and_resolution() {
         assert_eq!(response.status, 200, "{path}: {}", response.body);
     }
 }
+
+/// A media type's type and subtype are case-insensitive (RFC 9110 §8.3.1), and the door
+/// admits `?as=Text/Turtle` as the Turtle face it declares; the endpoint then compared it
+/// byte for byte and answered `500`, blaming a missing transreptor.
+#[test]
+fn as_names_a_media_type_in_any_case() {
+    let server = Server::start();
+
+    let turtle = server.get("/resmud/core?as=Text/Turtle", None);
+    assert_eq!(turtle.status, 200, "{}", turtle.body);
+    assert_eq!(turtle.media(), "text/turtle");
+
+    let page = server.get("/resmud/core?as=TEXT/HTML", None);
+    assert_eq!(page.status, 200, "{}", page.body);
+    assert_eq!(page.media(), "text/html");
+
+    let json = server.get("/-/resolution/iri/moved/x?as=Application/JSON", None);
+    assert_eq!(json.status, 200, "{}", json.body);
+    assert!(json.body.contains("\"strategy\""), "{}", json.body);
+}
