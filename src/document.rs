@@ -45,10 +45,16 @@ pub const HTML: &str = "text/html";
 const XSD_STRING: &str = "http://www.w3.org/2001/XMLSchema#string";
 const TEXT_HTML_UTF8: &str = "text/html;charset=utf-8";
 
-/// The media type alone, without parameters — `text/turtle; charset=utf-8`
-/// negotiates as `text/turtle`.
-fn bare(media_type: &str) -> &str {
-    media_type.split(';').next().unwrap_or(media_type).trim()
+/// The media type alone, without parameters and in lowercase — `Text/Turtle; charset=utf-8`
+/// negotiates as `text/turtle`, since a type and subtype are case-insensitive (RFC 9110
+/// §8.3.1).
+fn bare(media_type: &str) -> String {
+    media_type
+        .split(';')
+        .next()
+        .unwrap_or(media_type)
+        .trim()
+        .to_ascii_lowercase()
 }
 
 /// The IRI template a host binds [`doc`] at: the trailing variable captures the
@@ -140,7 +146,7 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
         };
         let wanted = inv
             .inline_str("as")
-            .map(|t| bare(t).to_string())
+            .map(bare)
             .unwrap_or_else(|_| CANONICAL.to_string());
 
         let at = as_of_arg(inv)?;
@@ -310,7 +316,7 @@ fn negotiate<'a>(inv: &'a Invocation<'_>, seen: Option<Arc<Seen>>) -> InvokeFutu
             )));
         }
 
-        let have = bare(&stored.repr_type.media_type).to_string();
+        let have = bare(&stored.repr_type.media_type);
 
         if have == wanted {
             return Ok(stat::counted(

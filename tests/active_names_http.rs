@@ -39,6 +39,20 @@ fn fill(dir: &Path) {
     std::fs::write(dir.join("registry.json"), REGISTRY).expect("registry");
 }
 
+/// Whether an HTTP server answers at `addr`; see [`Server::try_start`].
+fn answers_http(addr: SocketAddr) -> bool {
+    let Ok(mut stream) = TcpStream::connect(addr) else {
+        return false;
+    };
+    let probe = "OPTIONS /-/style HTTP/1.1\r\nHost: probe.example\r\nConnection: close\r\n\r\n";
+    let timeout = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut answer = [0u8; 9];
+    timeout.is_ok()
+        && stream.write_all(probe.as_bytes()).is_ok()
+        && stream.read_exact(&mut answer).is_ok()
+        && answer == *b"HTTP/1.1 "
+}
+
 struct Server {
     child: Child,
     addr: SocketAddr,
@@ -47,7 +61,19 @@ struct Server {
 }
 
 impl Server {
+    /// Start a server, on a fresh port if the one released for it was taken in between.
     fn start(root: PathBuf, args: &[&str]) -> Server {
+        for _ in 0..5 {
+            if let Some(server) = Server::try_start(&root, args) {
+                return server;
+            }
+        }
+        panic!("ikigai-name-server never listened on any of five ports");
+    }
+
+    /// One attempt: `None` if the server exited before it answered, which is what a port
+    /// taken between its release here and the server's bind looks like.
+    fn try_start(root: &Path, args: &[&str]) -> Option<Server> {
         let addr = TcpListener::bind("127.0.0.1:0")
             .and_then(|l| l.local_addr())
             .expect("an ephemeral port");
@@ -56,7 +82,7 @@ impl Server {
             .arg("--listen")
             .arg(addr.to_string())
             .arg("--root")
-            .arg(&root)
+            .arg(root)
             .args(args)
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&log).expect("a log file"))
@@ -65,18 +91,23 @@ impl Server {
         let mut server = Server {
             child,
             addr,
-            root,
+            root: root.to_path_buf(),
             log,
         };
+        // An HTTP answer, not a connection: the released port stays open in any child
+        // another test has forked but not yet exec'd, which accepts a connection before
+        // this server listens, and this server then cannot bind it and exits.
         let deadline = Instant::now() + Duration::from_secs(20);
-        while TcpStream::connect(server.addr).is_err() {
-            if let Some(status) = server.child.try_wait().expect("poll the server") {
-                panic!("ikigai-name-server exited before listening: {status}");
+        while !answers_http(server.addr) {
+            if server.child.try_wait().expect("poll the server").is_some() {
+                // Reaped already; a `Drop` here would remove the caller's root.
+                std::mem::forget(server);
+                return None;
             }
             assert!(Instant::now() < deadline, "server never listened");
             std::thread::sleep(Duration::from_millis(25));
         }
-        server
+        Some(server)
     }
 
     fn counting(root: PathBuf) -> Server {

@@ -558,12 +558,13 @@ enum NameFrom {
 /// The faces a resolution answers, by `as=`.
 fn face_type(inv: &Invocation<'_>) -> Result<&'static str> {
     let wanted = match inv.inline_str("as") {
+        // Case-insensitive, as a type and subtype are (RFC 9110 §8.3.1).
         Ok(wanted) => wanted
             .split(';')
             .next()
             .unwrap_or(wanted)
             .trim()
-            .to_string(),
+            .to_ascii_lowercase(),
         Err(Error::MissingArgument(_)) => return Ok(APPLICATION_JSON),
         Err(other) => return Err(other),
     };
