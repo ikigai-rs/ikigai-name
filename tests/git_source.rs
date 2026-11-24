@@ -1125,6 +1125,31 @@ const FILE_URL: &str =
     "https://api.forge.example/repos/acme/vocab/contents/vocab/core.ttl?ref=main";
 
 #[test]
+fn the_forge_reader_refuses_a_token_with_a_space_rather_than_sending_it() {
+    let (kernel, forge) = forge_world();
+    let capability = Capability::scoped([FORGE_NET]);
+    forge
+        .answers
+        .lock()
+        .unwrap()
+        .insert(FILE_URL.to_string(), (200, b"# one\n".to_vec()));
+    let err = block_on(kernel.issue(
+        forge_read(
+            "https://forge.example/acme/vocab.git",
+            &[("token", "tok 123")],
+        ),
+        &capability,
+    ))
+    .unwrap_err();
+    assert!(
+        matches!(&err, Error::InvalidArgument { name, .. } if name == "token"),
+        "{err:?}"
+    );
+    assert!(!err.to_string().contains("tok 123"), "{err}");
+    assert!(forge.sent.lock().unwrap().is_empty(), "the token was sent");
+}
+
+#[test]
 fn the_forge_reader_sends_the_token_and_reads_afresh_after_a_push() {
     let (kernel, forge) = forge_world();
     let capability = Capability::scoped([FORGE_NET]);

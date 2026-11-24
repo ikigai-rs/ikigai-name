@@ -57,8 +57,8 @@ fn scratch() -> PathBuf {
 struct ForgeState {
     /// The file on `main`, or `None` for a 404.
     file: Option<String>,
-    /// The token it demands, if the repository is private.
-    token: Option<String>,
+    /// The `Authorization` value it demands, if the repository is private.
+    demands: Option<&'static str>,
     requests: Vec<String>,
     authorizations: Vec<String>,
 }
@@ -121,8 +121,8 @@ fn answer_as_forge(mut stream: TcpStream, state: &Mutex<ForgeState>) {
     state.requests.push(line.clone());
     state.authorizations.push(authorization.clone());
     let wanted = line.contains("/repos/acme/vocab/contents/vocab/core.ttl?ref=main");
-    let allowed = match &state.token {
-        Some(token) => authorization == format!("Bearer {token}"),
+    let allowed = match state.demands {
+        Some(demanded) => authorization == demanded,
         None => true,
     };
     let (status, body) = match (&state.file, wanted && allowed) {
@@ -505,20 +505,27 @@ fn a_mirror_s_copy_outlives_the_process_and_the_repository() {
     assert!(wait_until_served(&server).contains("kept"));
 }
 
+/// A private repository's token, and the header the forge demands for it, spelled out
+/// whole so the test does not build it the way the code under test does.
+const TOKEN: &str = "tok-123";
+const TOKEN_AUTHORIZATION: &str = "Bearer tok-123";
+
 #[test]
 fn a_private_repository_is_read_with_the_token_from_the_secret_store() {
     let forge = Forge::start(&vocabulary("private"));
-    forge.state.lock().unwrap().token = Some("tok-123".into());
+    forge.state.lock().unwrap().demands = Some(TOKEN_AUTHORIZATION);
     let base = scratch();
     let root = base.join("root");
     std::fs::create_dir_all(&root).unwrap();
     let written = registry("forge.test", "hosted", true);
-    assert!(!written.contains("tok-123"));
+    assert!(!written.contains(TOKEN));
     std::fs::write(root.join("registry.json"), &written).unwrap();
     std::fs::write(root.join("shapes.ttl"), SHAPES).unwrap();
     let secrets = base.join("secrets");
     let store = FileBackend::new(&secrets);
-    store.set(&token_secret(None, "acme"), b"tok-123").unwrap();
+    store
+        .set(&token_secret(None, "acme"), TOKEN.as_bytes())
+        .unwrap();
     store.set(&hook_secret(None, "acme"), KEY).unwrap();
 
     let server = spawn(&forge, &root, &secrets, &[]);
@@ -528,7 +535,7 @@ fn a_private_repository_is_read_with_the_token_from_the_secret_store() {
         .lock()
         .unwrap()
         .authorizations
-        .contains(&"Bearer tok-123".to_string()));
+        .contains(&TOKEN_AUTHORIZATION.to_string()));
 
     // Nothing a client or a file holds it.
     for file in [
@@ -537,7 +544,7 @@ fn a_private_repository_is_read_with_the_token_from_the_secret_store() {
         "git/document.acme.ttl",
     ] {
         let text = std::fs::read_to_string(root.join(file)).unwrap_or_default();
-        assert!(!text.contains("tok-123"), "{file}");
+        assert!(!text.contains(TOKEN), "{file}");
     }
 }
 
