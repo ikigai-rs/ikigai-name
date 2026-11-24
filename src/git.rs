@@ -1191,9 +1191,18 @@ async fn http_get(inv: &Invocation<'_>, url: &str, token: Option<&str>) -> Resul
             ),
         );
     if let Some(token) = token {
+        // The refusal names the rule, never the token.
+        let authorization =
+            ikigai_http::auth::bearer(token).map_err(|e| Error::InvalidArgument {
+                name: "token".into(),
+                detail: format!(
+                    "the token is not usable as a Bearer credential ({})",
+                    e.code()
+                ),
+            })?;
         request = request.with_arg(
             "authorization",
-            ArgRef::Inline(format!("Bearer {token}").into_bytes()),
+            ArgRef::Inline(authorization.into_string().into_bytes()),
         );
     }
     inv.issue(request).await.map_err(|e| match e {
