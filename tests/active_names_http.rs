@@ -334,10 +334,10 @@ fn rule_and_miss_partitions_are_flushed_by_the_server() {
             .flatten()
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
-                !entry
-                    .file_name()
-                    .to_string_lossy()
-                    .ends_with(".periods.json")
+                // The file store can expose parseable staging files during a flush.
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".json") && !name.ends_with(".periods.json")
             })
             .filter_map(|entry| std::fs::read(entry.path()).ok())
             .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
