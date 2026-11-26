@@ -30,7 +30,12 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   `name: "x" is not a term of this host: it lives at <IRI>`). A refusal about the past names its
   date in UTC (`name: urn:file:x did not exist as of 2026-03-31T23:59:59Z`, `name: this host keeps
   no history, so it cannot answer as of <date>; leave out as-of for the current answer, or bind
-  urn:name:history-source to add it`). A registry refused for a redirect's status or rule names
+  urn:name:history-source to add it`). With `--history git`, a read that git does not finish in
+  10 seconds is refused with `name: git took longer than 10 seconds to read the history, so this
+  server cannot answer as of that date now; try again, or leave out as-of for the current
+  answer`, and the server refuses to start on `--history `svn` is not a kind of history source;
+  the kinds are: git` or, in a build without the `history` feature, `--history needs a build
+  with the history feature, and this one links no git; rebuild with --features history`. A registry refused for a redirect's status or rule names
   the namespace, and the rule by its place and its match (`the namespace "x" cannot be claimed:
   its status 404 is not one of 301, 302, 303, 307 or 308`, `the namespace "x" cannot be claimed:
   in rule 2 ("old/{y}"), its target uses {z}, which its match does not capture`). A registry
@@ -311,3 +316,4 @@ you are comfortable sharing them. Anything security-sensitive goes through
 | 2026-11-05 | A namespace served from a git repository ([PR #36](https://github.com/ikigai-rs/ikigai-name/pull/36)): a refresh's line, a status, their refusals, the webhook's refusals and the server's `--git` lines. Plain text and refusals only; the page is unchanged, and now also renders a repository's vocabulary, escaped. Tested as above, with no assistive technology and no browser. |
 | 2026-11-05 | A redirect's status and rewrite rules ([PR #35](https://github.com/ikigai-rs/ikigai-name/pull/35)): more fields in `urn:name:resolve`'s answer, and the refusals of a status or a rule. Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
 | 2026-11-12 | Record Pass / Fail / Blocked results with scope and evidence; rerun automated checks on main and mark historical browser runs and unrun assistive-technology checks Blocked. |
+| 2026-11-26 | The `--history` refusals: an unknown kind, a build without the feature, and a git that times out. Plain text and refusals only; the page is unchanged. `tests/history_http.rs` checks the unknown kind's sentence and status; the timeout's sentence is not exercised by a test. |

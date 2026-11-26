@@ -8,27 +8,33 @@
 //!
 //! ## History is the archive, and the cache is not
 //!
-//! A past answer comes from the history of the repository holding the vocabulary,
-//! never from a retained cache entry, because whether an answer is correct must
-//! not depend on what has been evicted. An as-of answer is therefore never marked
-//! cacheable here, and a date that has not happened yet can still change as
-//! commits land.
+//! A past answer comes from wherever the vocabulary is kept, read through the seam
+//! below, never from a retained cache entry, because whether an answer is correct
+//! must not depend on what has been evicted. An as-of answer is therefore never
+//! marked cacheable here, and a date that has not happened yet can still change as
+//! history is recorded.
 //!
 //! ## The seam, and what binds it
 //!
 //! Every past read goes through one bound IRI, [`HISTORY_IRI`], so this crate
-//! carries no git and links no exec module. A binding takes `source` (the IRI as
-//! the registry names it, or [`REGISTRY_IRI`] for the
+//! assumes no particular store, carries no git and links no exec module. A binding
+//! takes `source` (the IRI as the registry names it, or [`REGISTRY_IRI`] for the
 //! registry itself) and `as-of` (an instant in UTC), and answers that resource's
 //! representation as it stood then, or [`Error::NotFound`] if it did not exist
 //! then. A host with tenants keys the binding on
 //! [`tenant_of`](crate::tenant::tenant_of), as it does for the registry.
+//! `tests/history_contract/` is the test every binding must pass.
 //!
 //! With nothing bound, `as-of` is refused. Answering today's document to a
 //! question about March would be a wrong answer that looks right.
 //!
-//! [`repo_history`] is the binding over git, composed from `urn:repo:*` resources
-//! through the kernel. It needs two, both served by `ikigai-repo` (0.5.0 onward):
+//! Git is one binding, [`repo_history`], below. A store that keeps the vocabulary
+//! in a database would be another, bound at the same IRI.
+//!
+//! ## The git binding
+//!
+//! [`repo_history`] is composed from `urn:repo:*` resources through the kernel. It
+//! needs two, both served by `ikigai-repo` (0.5.0 onward):
 //!
 //! - [`LOG_IRI`] picks the commit.
 //! - [`SHOW_IRI`] reads a file at that commit: it takes `dir`, `rev` (a full commit
@@ -39,12 +45,12 @@
 //! `urn:cap:exec:git` grants nothing. A host may bind either itself instead, to
 //! the same contract.
 //!
-//! ## Which commit is "at that date"
-//!
 //! The newest commit touching the file, in log order, whose date is at or before
-//! the instant. `urn:repo:log` reports the **author** date, the only date it
-//! offers, so a commit rebased or merged long after it was written counts from
-//! when it was written.
+//! the instant, is "at that date". `urn:repo:log` reports the **author** date, the
+//! only date it offers, so a commit rebased or merged long after it was written
+//! counts from when it was written. One file name is followed, so a date before a
+//! rename finds nothing. Git records no media type, so a past file's type comes
+//! from its name.
 
 use crate::registry::Registry;
 use crate::REGISTRY_IRI;
