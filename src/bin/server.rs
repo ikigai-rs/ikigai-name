@@ -180,10 +180,11 @@ fn usage() -> ! {
            --git-forge HOST=KIND[@API]\n                   \
                             with --git, read repositories on HOST too; KIND is github,\n                   \
                             gitlab or forgejo, and API is where its API is; repeatable\n  \
-           --history KIND   answer as-of from this kind of history source; KIND is git,\n                   \
-                            the repository holding --root or each tenant's directory\n                   \
-                            (needs a build with the history feature; default: none,\n                   \
-                            and as-of is refused with 501)\n"
+           --history KIND   answer as-of from this kind of history source; KIND is git:\n                   \
+                            --root, or each tenant's directory, must be the top of\n                   \
+                            its own git repository (needs a build with the history\n                   \
+                            feature, on Unix; default: none, and as-of is refused\n                   \
+                            with 501)\n"
     );
     std::process::exit(2)
 }
@@ -937,6 +938,16 @@ async fn run(options: Options) -> std::io::Result<()> {
                 .map(|(host, dir)| (Some(host.clone()), dir.clone()))
                 .collect()
         };
+        // Refused here rather than on every as-of read: see `server/history.rs`.
+        let refusal = history::not_unix().or_else(|| {
+            sites
+                .iter()
+                .find_map(|(_, dir)| history::not_a_repository(dir))
+        });
+        if let Some(refusal) = refusal {
+            eprintln!("ikigai-name-server: {refusal}");
+            std::process::exit(2)
+        }
         names = names.bind(
             Exact::new(ikigai_name::HISTORY_IRI),
             history::History::git(&sites, &options.registry),

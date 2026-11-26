@@ -151,3 +151,32 @@ fn an_unknown_history_kind_is_refused_with_the_kinds_named() {
         "{refused}"
     );
 }
+
+/// Tenants kept as subdirectories of one larger repository, the case the review
+/// reproduced as "fatal: not a git repository" on every as-of read: each site must be the
+/// top of its own repository, so the server refuses to start, and says what to change.
+#[test]
+fn a_site_that_is_not_the_top_of_a_repository_is_refused_at_startup() {
+    let root = git::scratch("history-http-shared");
+    git::init(&root);
+    for tenant in TENANTS {
+        std::fs::create_dir_all(root.join(tenant).join("vocab")).expect("tenant directory");
+    }
+    let refused = Server::start(root, &history_args())
+        .err()
+        .expect("the server refuses to start");
+    assert!(refused.contains("exit status: 2"), "{refused}");
+    assert!(
+        refused.contains(
+            "--history git reads the git repository whose top is each site's directory, and "
+        ),
+        "{refused}"
+    );
+    assert!(
+        refused.contains(
+            " holds no .git; run `git init` there and commit the vocabulary, or point --root \
+             (or the tenant's directory) at the top of a repository"
+        ),
+        "{refused}"
+    );
+}

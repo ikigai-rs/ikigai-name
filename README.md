@@ -576,13 +576,20 @@ binding must pass (`tests/history_source.rs` runs it over git through the librar
 **The standalone server binds no history unless told to**: without `--history` it
 answers `as-of` with `501` and a sentence saying why, rather than today's document.
 `--history git`, in a build with the `history` feature, binds `repo_history` over
-the repository holding `--root` (or each tenant's directory, keyed by tenant). That
+the git repository whose top is `--root` (or each tenant's directory, keyed by
+tenant, each the top of a repository of its own). A site directory that holds no
+`.git` stops the server at startup, since git would find no repository there on
+any read: tenants kept as subdirectories of one larger repository are refused. That
 build links `ikigai-repo`, the only exec module in the server: git runs only through
 `urn:repo:log` and `urn:repo:show`, in a kernel of their own that holds exactly
 `urn:cap:exec:read:git`, which no request's capability holds. `git` is
 `/usr/bin/git` and nothing else (the server sets its own `PATH` to `/usr/bin` before
 it starts a thread, since `ikigai-repo` 0.6.0 runs git by name), and a read that
-takes over 10 seconds is refused. `--history` names a kind of history source, so a
+takes over 10 seconds is refused (`504`). The timeout bounds the answer, not the
+work: a git still running then is not killed, so at most 4 reads hold a thread and a
+git at once, counted until git returns, and one more is refused straight away with
+`429` and `Retry-After: 10` rather than queued. The fixed path is a Unix one, so
+`--history git` is refused at startup on Windows. `--history` names a kind of history source, so a
 later store adds a kind rather than a second path. An unknown kind stops the server
 with `--history `svn` is not a kind of history source; the kinds are: git`.
 
