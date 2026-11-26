@@ -952,13 +952,11 @@ async fn run(options: Options) -> std::io::Result<()> {
         .git
         .then(|| git_host(&options, &root, !tenants.is_empty()));
     #[cfg(feature = "git")]
-    if git_host.is_some() {
+    if let Some(host) = &git_host {
         names = names
             .bind(
                 Exact::new(ikigai_name::git::READ_IRI),
-                ikigai_name::git::forge_reader_for(
-                    git_host.as_ref().expect("just checked").forges.clone(),
-                ),
+                ikigai_name::git::forge_reader_for(host.forges.clone()),
             )
             .bind(
                 UriTemplate::parse(ikigai_name::git::STORE_TEMPLATE)
