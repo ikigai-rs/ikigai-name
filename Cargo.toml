@@ -71,6 +71,10 @@ ikigai-secret = { version = "0.4.0", optional = true }
 ikigai-shacl = { version = "0.6.0", default-features = false, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 futures-util = { version = "0.3", features = ["io"], optional = true }
+# `--history git` (ledger #4464): urn:repo:log and urn:repo:show, the only exec in the
+# server, and only in a build with the `history` feature. 0.6.0 is the exec split and the
+# last release on core 0.3; its caret is also a ceiling of <0.7.0.
+ikigai-repo = { version = "0.6.0", optional = true }
 
 # --- the standalone server ---------------------------------------------------
 # Optional, so a library consumer never builds an HTTP stack or RocksDB. The
@@ -79,6 +83,9 @@ futures-util = { version = "0.3", features = ["io"], optional = true }
 # property of the build rather than of a config file.
 [features]
 server = ["dep:ikigai-web", "dep:ikigai-sparql", "dep:ikigai-fs", "dep:ikigai-ui", "dep:tokio"]
+# As-of answers from the vocabulary's git history (`--history git`). Separate, because the
+# plain server's claim is that it links no exec module, and that claim is about its build.
+history = ["server", "dep:ikigai-repo", "tokio/sync"]
 # Namespaces served from git repositories. Separate, because the plain server's claim is
 # that it links no secrets and no outbound network, and that claim is about its build.
 git = ["server", "dep:ikigai-http", "dep:ikigai-secret", "dep:ikigai-shacl", "dep:reqwest", "dep:futures-util", "tokio/sync"]
@@ -111,6 +118,12 @@ required-features = ["server"]
 name = "active_names_http"
 path = "tests/active_names_http.rs"
 required-features = ["server"]
+
+# The history contract through the real binary, over `--history git`.
+[[test]]
+name = "history_http"
+path = "tests/history_http.rs"
+required-features = ["history"]
 
 # A push, a shape's refusal and a vanished repository, through the real binary.
 [[test]]

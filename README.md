@@ -556,28 +556,55 @@ A redirect's status and rules are the ones the registry held at that date too.
 Only today's `limits` apply, because they are what this deployment holds itself
 to, whatever an old file allowed.
 
-**History is the archive; the cache is not.** A past answer is read from the
-history of the repository holding the vocabulary and is never marked cacheable
-here, so its correctness cannot depend on eviction.
+**History is the archive; the cache is not.** A past answer is read from wherever
+the vocabulary is kept, through one seam, and is never marked cacheable here, so its
+correctness cannot depend on eviction.
 
 | what | needs |
 |---|---|
 | any past answer | a binding at `urn:name:history-source`, taking `source` and `as-of` |
 | `repo_history(dir, registry_file)`, the binding over git | `urn:repo:log`, and `urn:repo:show` |
 
-**A stock `ikigai-repo` serves both**, from 0.5.0: `urn:repo:log` picks the
-commit and `urn:repo:show` reads the file at it. From 0.6.0 both require
-`urn:cap:exec:read:git`, so the capability a past read runs under must grant that;
-the old `urn:cap:exec:git` grants nothing. The contract is in
-[`src/history.rs`](src/history.rs).
+A binding answers a source's representation as it stood at the instant, or
+`NotFound` if it did not exist then; the registry itself is a source. Git is one
+binding. A store that keeps the vocabulary in a database would be another, bound at
+the same IRI, and resolution would not change. The contract is in
+[`src/history.rs`](src/history.rs), and `tests/history_contract/` is the test any
+binding must pass (`tests/history_source.rs` runs it over git through the library,
+`tests/history_http.rs` through the server).
 
-**The standalone server binds no history**, so it answers `as-of` with `501` and a
-sentence saying why, rather than today's document. Binding one means linking an
-exec module into an internet-facing binary this crate keeps free of them, which
-is a decision of its own.
+**The standalone server binds no history unless told to**: without `--history` it
+answers `as-of` with `501` and a sentence saying why, rather than today's document.
+`--history git`, in a build with the `history` feature, binds `repo_history` over
+the git repository whose top is `--root` (or each tenant's directory, keyed by
+tenant, each the top of a repository of its own). A site directory that holds no
+`.git` stops the server at startup, since git would find no repository there on
+any read: tenants kept as subdirectories of one larger repository are refused. That
+build links `ikigai-repo`, the only exec module in the server: git runs only through
+`urn:repo:log` and `urn:repo:show`, in a kernel of their own that holds exactly
+`urn:cap:exec:read:git`, which no request's capability holds. `git` is
+`/usr/bin/git` and nothing else (the server sets its own `PATH` to `/usr/bin` before
+it starts a thread, since `ikigai-repo` 0.6.0 runs git by name), and a read that
+takes over 10 seconds is refused (`504`). The timeout bounds the answer, not the
+work: a git still running then is not killed, so at most 4 reads hold a thread and a
+git at once, counted until git returns, and one more is refused straight away with
+`429` and `Retry-After: 10` rather than queued. The fixed path is a Unix one, so
+`--history git` is refused at startup on Windows. `--history` names a kind of history source, so a
+later store adds a kind rather than a second path. An unknown kind stops the server
+with `--history `svn` is not a kind of history source; the kinds are: git`.
+
+**Upgrading:** nothing changes until a deployment opts in. Without `--history`,
+`as-of` is still a `501` with the same sentence.
 
 **The documentation page does not answer as of a date**: `as-of` with `text/html`
 is refused, and Turtle is what a past read serves.
+
+### The git binding
+
+**A stock `ikigai-repo` serves both** of `repo_history`'s resources, from 0.5.0:
+`urn:repo:log` picks the commit and `urn:repo:show` reads the file at it. From 0.6.0
+both require `urn:cap:exec:read:git`, so the capability a past read runs under must
+grant that; the old `urn:cap:exec:git` grants nothing.
 
 `repo_history` chooses by `urn:repo:log`'s **author** date, the only one it
 reports, so a commit rebased or merged long after it was written counts from when
@@ -1224,9 +1251,9 @@ or `cargo install --locked ikigai-name --features server` for the standalone
 `ikigai-name-server` binary. Running the `server` feature needs a directory holding `registry.json` and the documents it
 points at; embedded, a host binds `ikigai_name::space()` and nothing else.
 
-**Built but not served by the standalone server:** [as-of resolution](#as-of-a-date),
-which an embedding host can bind over `ikigai-repo` but the server does not, since it
-links no exec module. Over HTTP, the
+**Served by the standalone server only when asked:** [as-of resolution](#as-of-a-date),
+with `--history git` in a build with the `history` feature; the default build links no
+exec module. **Not served** over HTTP: the
 [active-name counts](#active-names) and a repository's status, which need an authenticated
 transport.
 

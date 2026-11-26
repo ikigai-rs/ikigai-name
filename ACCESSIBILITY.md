@@ -30,7 +30,20 @@ claim. Adapted from the [ACCESSIBILITY.md template](https://github.com/mgifford/
   `name: "x" is not a term of this host: it lives at <IRI>`). A refusal about the past names its
   date in UTC (`name: urn:file:x did not exist as of 2026-03-31T23:59:59Z`, `name: this host keeps
   no history, so it cannot answer as of <date>; leave out as-of for the current answer, or bind
-  urn:name:history-source to add it`). A registry refused for a redirect's status or rule names
+  urn:name:history-source to add it`). With `--history git`, a read that git does not finish in
+  10 seconds is refused with `name: git took longer than 10 seconds to read the history, so this
+  server cannot answer as of that date now; try again, or leave out as-of for the current
+  answer`, and a read past the 4 it runs at once with `name: this server is already reading 4
+  answers from history, the most it reads at once; try again in 10 seconds, or leave out as-of
+  for the current answer` (and `Retry-After: 10`). The server refuses to start on `--history
+  `svn` is not a kind of history source; the kinds are: git`; in a build without the `history`
+  feature, `--history needs a build with the history feature, and this one links no git;
+  rebuild with --features history`; on a site directory that is not the top of a repository,
+  `--history git reads the git repository whose top is each site's directory, and <dir> holds
+  no .git; run `git init` there and commit the vocabulary, or point --root (or the tenant's
+  directory) at the top of a repository`; and on a host that is not Unix, `--history git runs
+  git only from /usr/bin, which only a Unix host has; run this server on Linux or another Unix,
+  or leave out --history`. A registry refused for a redirect's status or rule names
   the namespace, and the rule by its place and its match (`the namespace "x" cannot be claimed:
   its status 404 is not one of 301, 302, 303, 307 or 308`, `the namespace "x" cannot be claimed:
   in rule 2 ("old/{y}"), its target uses {z}, which its match does not capture`). A registry
@@ -228,6 +241,8 @@ browser renders it or how assistive technology presents it.
 | Redirect target health and timer option refusals | Pass | `tests/target_health.rs` checks labeled JSON, absent and outdated results, owner and tenant isolation, HTTP statuses, and a real per-tenant timer. `tests/server_check.rs` checks option pairing, interval and host refusals, and the plain build refusal. Run on 2026-11-15 with all features and the plain `server` build. Text and structure only; no assistive-technology evaluation. |
 | Verified content delivery refusals and download labeling | Pass | `tests/content_delivery.rs`, including `unavailability_is_not_an_integrity_failure` (each gateway named, integrity kept apart from unavailability), `an_omitted_block_is_an_incomplete_file_and_nothing_is_served`, each limit's test naming its bound, and `an_active_media_type_is_served_as_an_octet_stream_download`. Run on 2026-11-22 with `cargo test --all-features`. Checks emitted words and headers; no assistive-technology evaluation. |
 | Repository status labels, bounded reasons, refresh and webhook refusals | Pass | `src/git.rs`: `the_status_is_one_labeled_line_each`, `a_reason_is_one_bounded_line_with_no_token`; `tests/git_source.rs`, including `the_reason_is_readable_by_the_owner_and_nobody_else`, `a_reader_echoing_the_token_does_not_put_it_in_the_record`; `tests/git_http.rs` exercises the real binary. Checks output and access control, not spoken readability. |
+| `--history` refusals: unknown kind, site not the top of a repository, timeout, reads in flight | Pass | `tests/history_http.rs`: `an_unknown_history_kind_is_refused_with_the_kinds_named`, `a_site_that_is_not_the_top_of_a_repository_is_refused_at_startup` (the real binary's exit status and sentence); `src/bin/server/history.rs`: `a_read_past_the_timeout_is_refused_with_its_sentence` (504), `a_read_past_the_cap_is_refused_with_retry_after` (429, `Retry-After: 10`). Run on 2026-11-26 with `cargo test --all-features`. Checks words and status; no terminal assistive-technology evaluation. |
+| `--history` refusals: a build without the `history` feature, a host that is not Unix | Blocked | Neither is reachable in CI: it builds every feature, so the binary always has `history`, and it runs on Linux. Checked by reading `options()` and `history::not_unix` only. |
 | Browser rendering, CSP, htmx focus/region/address/title behavior and Apply | Blocked | No current browser session was run. Historical Chromium check on 2026-11-01 ([PR #29](https://github.com/ikigai-rs/ikigai-name/pull/29)) reported no console errors, a preserved live region, focus remaining on the link, updated address/title and working Apply. Browser version and invocation were not recorded here; CI does not repeat it. It predates tenant references ([PR #31](https://github.com/ikigai-rs/ikigai-name/pull/31)). |
 | Automated browser accessibility checker (axe) | Blocked | No current axe run. Historical 2026-11-01 run in PR #29 reported no violations under WCAG 2.0/2.1/2.2 A and AA rules for the list, htmx detail, term page, light/dark/high-contrast themes and emulated `prefers-contrast: more`. axe and Chromium versions and invocation were not recorded here; CI does not repeat it. No JavaScript-off or tenant-reference evaluation. |
 | Manual keyboard navigation and visible focus | Blocked | No person's keyboard pass was performed for this review; no interactive browser session was available. CSS outlines and link markup alone do not verify navigation or focus visibility. |
@@ -311,3 +326,4 @@ you are comfortable sharing them. Anything security-sensitive goes through
 | 2026-11-05 | A namespace served from a git repository ([PR #36](https://github.com/ikigai-rs/ikigai-name/pull/36)): a refresh's line, a status, their refusals, the webhook's refusals and the server's `--git` lines. Plain text and refusals only; the page is unchanged, and now also renders a repository's vocabulary, escaped. Tested as above, with no assistive technology and no browser. |
 | 2026-11-05 | A redirect's status and rewrite rules ([PR #35](https://github.com/ikigai-rs/ikigai-name/pull/35)): more fields in `urn:name:resolve`'s answer, and the refusals of a status or a rule. Plain text and refusals only; the page is unchanged. Tested as above, with no assistive technology. |
 | 2026-11-12 | Record Pass / Fail / Blocked results with scope and evidence; rerun automated checks on main and mark historical browser runs and unrun assistive-technology checks Blocked. |
+| 2026-11-26 | The `--history` refusals: an unknown kind, a build without the feature, a site that is not the top of a repository, a host that is not Unix, a git that times out, and a read past the 4 in flight. Plain text and refusals only; the page is unchanged. `tests/history_http.rs` checks the unknown kind's and the missing `.git`'s sentences and exit status; the server's unit tests check the timeout's and the busy read's sentences, statuses and `Retry-After`. The no-feature and non-Unix sentences are not exercised: CI builds every feature, on Linux. |

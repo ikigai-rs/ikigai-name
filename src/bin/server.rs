@@ -12,7 +12,10 @@
 //! module compiled in, so a flaw in one cannot be reached from here. That is
 //! linkage-gating rather than config-gating: what this process cannot do is a
 //! property of how it was built, not of a file someone might edit. The `git`
-//! feature is the one addition, and it is a different build (see below).
+//! feature is one addition, and it is a different build (see below). The `history`
+//! feature is the other: it links `ikigai-repo` for `--history git`, the only exec in
+//! the server, held by a kernel no request reaches except through
+//! `urn:name:history-source` (see `server/history.rs`).
 //!
 //! ## The public surface is two routes, and the page's two assets
 //!
@@ -94,6 +97,9 @@ use ikigai_web::{fixed_cap, AdmitFn, CapFn, EdgeConfig, HttpRequest, Refusal, Ro
 #[cfg(feature = "git")]
 #[path = "server/git.rs"]
 mod git;
+#[cfg(feature = "history")]
+#[path = "server/history.rs"]
+mod history;
 #[cfg(feature = "git")]
 #[path = "server/target_health.rs"]
 mod target_health;
@@ -116,6 +122,10 @@ struct Options {
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     target_health_net: Vec<String>,
     git: bool,
+    /// The history source kind `--history` named, if any; spelled as given, and read
+    /// only by a build with the `history` feature.
+    #[cfg_attr(not(feature = "history"), allow(dead_code))]
+    history: Option<String>,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
     git_every: Option<u64>,
     #[cfg_attr(not(feature = "git"), allow(dead_code))]
@@ -169,7 +179,12 @@ fn usage() -> ! {
                             keys, outside --root (default: the system's secret store)\n  \
            --git-forge HOST=KIND[@API]\n                   \
                             with --git, read repositories on HOST too; KIND is github,\n                   \
-                            gitlab or forgejo, and API is where its API is; repeatable\n"
+                            gitlab or forgejo, and API is where its API is; repeatable\n  \
+           --history KIND   answer as-of from this kind of history source; KIND is git:\n                   \
+                            --root, or each tenant's directory, must be the top of\n                   \
+                            its own git repository (needs a build with the history\n                   \
+                            feature, on Unix; default: none, and as-of is refused\n                   \
+                            with 501)\n"
     );
     std::process::exit(2)
 }
@@ -191,6 +206,7 @@ fn options() -> Options {
     let mut git_every = None;
     let mut secrets = None;
     let mut git_forges = Vec::new();
+    let mut history = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -258,6 +274,7 @@ fn options() -> Options {
             }
             "--secrets" => secrets = Some(PathBuf::from(value())),
             "--git-forge" => git_forges.push(value()),
+            "--history" => history = Some(value()),
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("ikigai-name-server: unknown option `{other}`");
@@ -297,6 +314,22 @@ fn options() -> Options {
         );
         std::process::exit(2)
     }
+    if let Some(kind) = &history {
+        if !matches!(kind.as_str(), "git") {
+            eprintln!(
+                "ikigai-name-server: --history `{kind}` is not a kind of history source; \
+                 the kinds are: git"
+            );
+            std::process::exit(2)
+        }
+        if !cfg!(feature = "history") {
+            eprintln!(
+                "ikigai-name-server: --history needs a build with the history feature, and \
+                 this one links no git; rebuild with --features history"
+            );
+            std::process::exit(2)
+        }
+    }
     Options {
         listen,
         root,
@@ -314,6 +347,7 @@ fn options() -> Options {
         git_every,
         secrets,
         git_forges,
+        history,
     }
 }
 
@@ -808,10 +842,20 @@ async fn report_site(
         .to_vec())
 }
 
-#[tokio::main]
-async fn main() -> std::io::Result<()> {
+fn main() -> std::io::Result<()> {
     let options = options();
+    // Before the runtime, while this process has one thread: see `history::fix_git`.
+    #[cfg(feature = "history")]
+    if options.history.is_some() {
+        history::fix_git();
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(options))
+}
 
+async fn run(options: Options) -> std::io::Result<()> {
     // ★ Canonicalise ONCE and use the result for both the jail and the ACL.
     //
     // They are two independent bounds on the same directory, and they only
@@ -884,18 +928,46 @@ async fn main() -> std::io::Result<()> {
             seen_files(),
         );
     }
+    #[cfg(feature = "history")]
+    if options.history.is_some() {
+        let sites: Vec<(Option<String>, PathBuf)> = if tenants.is_empty() {
+            vec![(None, root.clone())]
+        } else {
+            tenants
+                .iter()
+                .map(|(host, dir)| (Some(host.clone()), dir.clone()))
+                .collect()
+        };
+        // Refused here rather than on every as-of read: see `server/history.rs`.
+        let refusal = history::not_unix().or_else(|| {
+            sites
+                .iter()
+                .find_map(|(_, dir)| history::not_a_repository(dir))
+        });
+        if let Some(refusal) = refusal {
+            eprintln!("ikigai-name-server: {refusal}");
+            std::process::exit(2)
+        }
+        names = names.bind(
+            Exact::new(ikigai_name::HISTORY_IRI),
+            history::History::git(&sites, &options.registry),
+        );
+    }
+    let as_of = if options.history.is_some() {
+        ", as-of from history in git".to_string()
+    } else {
+        String::new()
+    };
     #[cfg(feature = "git")]
     let git_host = options
         .git
         .then(|| git_host(&options, &root, !tenants.is_empty()));
     #[cfg(feature = "git")]
-    if git_host.is_some() {
+    if let Some(host) = &git_host {
         names = names
             .bind(
                 Exact::new(ikigai_name::git::READ_IRI),
-                ikigai_name::git::forge_reader_for(
-                    git_host.as_ref().expect("just checked").forges.clone(),
-                ),
+                ikigai_name::git::forge_reader_for(host.forges.clone()),
             )
             .bind(
                 UriTemplate::parse(ikigai_name::git::STORE_TEMPLATE)
@@ -1120,7 +1192,7 @@ async fn main() -> std::io::Result<()> {
     let target_checks = String::new();
 
     eprintln!(
-        "ikigai-name-server: {} → {} ({access}, jailed to {}, file cache {}{counting}{repositories}{target_checks})",
+        "ikigai-name-server: {} → {} ({access}, jailed to {}, file cache {}{counting}{repositories}{target_checks}{as_of})",
         options.listen,
         REGISTRY_IRI,
         jailed,
